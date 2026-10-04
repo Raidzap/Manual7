@@ -1,16 +1,20 @@
-# Manual7 — 0.1.4 experimental
+# Manual7 — 0.1.5 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW ainda falha no processamento com erro AVFoundation −11800 e zero bytes; o erro interno não constava no diagnóstico anterior. A 0.1.4 melhora o diagnóstico e oferece uma comparação de sessão. **Não é uma correção confirmada de RAW.** Compilação arm64/rootless, 11 testes existentes e análise estática concluídos; esta versão ainda não foi executada no aparelho pelo desenvolvedor.
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW ainda retorna erro AVFoundation −11800 / OSStatus −12780 e zero bytes. A 0.1.5 corrige a condução e a correlação do teste sem peaking; **não é uma correção RAW confirmada**. Build arm64/rootless, 11 testes existentes e análise estática concluídos. O fluxo novo ainda precisa ser validado no aparelho.
 
-## Diagnóstico RAW na 0.1.4
+## Teste RAW e relatório na 0.1.5
 
-Os erros agora incluem `userInfo`, `failureReason` e a cadeia `NSUnderlyingError`. O callback de processamento e o callback final são registrados separadamente, para que um erro genérico de conclusão não esconda o erro anterior. A serialização limita profundidade, itens e tamanho de texto; dados binários são representados somente pela quantidade de bytes.
+A versão anterior tinha uma ação que alternava remoção/restauração conforme uma leitura da sessão ao abrir o menu. A reconfiguração era acrescentada ao histórico da foto anterior; um disparo novo apagava esse histórico. Não havia identificação própria do teste nem da instância da sessão. Isso dificultava distinguir mudança de modo, nova sessão e relatório de outra tentativa. A revisão não comprovou por que a saída de vídeo reapareceu nos relatórios recebidos.
 
-**Exportar → Testar RAW sem saída de peaking** remove o `AVCaptureVideoDataOutput` da sessão, reinicia a câmera e volta a exposição/foco para AUTO/AF. O visor continua usando `AVCaptureVideoPreviewLayer`. A ação não dispara uma foto automaticamente; ative DNG RAW e toque em FOTOGRAFAR. Exporte o diagnóstico após a tentativa. **Restaurar saída de peaking** restabelece a configuração anterior; fechar e reabrir M7 também volta à configuração padrão. Não é possível reconfigurar durante uma captura ou com foto pendente.
+Agora **Exportar → Executar teste RAW sem peaking** faz uma operação completa: solicita explicitamente a remoção das saídas de vídeo, reinicia em AUTO/AF, verifica que resta apenas o `AVCapturePhotoOutput` e dispara uma foto RAW. O estado é conferido novamente antes da submissão; se as saídas não corresponderem, o disparo é bloqueado e registrado como falha de configuração. O teste não depende de um segundo toque em FOTOGRAFAR nem do estado visual do interruptor RAW. Ao terminar ou falhar, abre o diagnóstico automaticamente.
 
-Esse teste é diferente de desligar o interruptor Peaking: o interruptor apenas desativa a análise das bordas, mantendo a saída de vídeo conectada. A comparação ajuda a investigar uma possível interação com RAW, mas os relatórios recebidos não comprovam essa hipótese. `sessionNow.outputs` e a sessão registrada no disparo mostram quais saídas estavam conectadas.
+A ação de teste tem sempre o mesmo efeito. **Restaurar saída de peaking** é uma ação separada. O modo solicitado é mantido ao recriar o M7 dentro do mesmo processo Câmera; ao encerrar o processo, o padrão volta. A troca entre menus/alertas aguarda a transição existente e dispensa especificamente a tela apresentada.
+
+O diagnóstico separa `sessionEvents`, `lastCapture` e `lastComparison`, com identificadores de processo, controlador, sessão e teste. `lastComparison` preserva uma cópia do resultado mesmo após outra foto. Quando corresponde ao último disparo, `captureReport: lastCapture` aponta para o conteúdo sem duplicá-lo. `verifiedSession` registra as saídas após a configuração; `submit.session` registra o estado observado na submissão. `photoOnlyRequested` e `photoOnlyObserved` tornam divergências explícitas.
+
+Os erros incluem `userInfo`, `failureReason` e `NSUnderlyingError`. Os callbacks de processamento e de conclusão são registrados separadamente. A serialização limita profundidade, itens e tamanho de texto; dados binários são representados somente pela quantidade de bytes. Desligar somente o interruptor Peaking continua desativando a análise das bordas sem remover a saída de vídeo; use a ação de teste para essa comparação.
 
 ## Correção de armazenamento na 0.1.3
 
@@ -71,17 +75,17 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.1.4](https://github.com/Raidzap/Manual7/releases/tag/v0.1.4).
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.1.5](https://github.com/Raidzap/Manual7/releases/tag/v0.1.5).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
-2. Transfira `dev.manual7.camera_0.1.4_iphoneos-arm64.deb` para o iPhone.
+2. Transfira `dev.manual7.camera_0.1.5_iphoneos-arm64.deb` para o iPhone.
 3. Abra o pacote em um instalador de `.deb`, como o do Filza, se já estiver instalado. Alternativamente, em um terminal no iPhone, use o comando abaixo com o caminho real do arquivo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
-sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.1.4_iphoneos-arm64.deb
+sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.1.5_iphoneos-arm64.deb
 ```
 
 O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. A dependência `mobilesubstrate` é a interface de compatibilidade de hooking; use a implementação já fornecida pelo jailbreak.

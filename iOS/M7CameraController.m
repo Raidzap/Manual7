@@ -6,6 +6,18 @@
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <unistd.h>
+
+// Preserve the explicit mode across M7 controllers in this Camera process.
+static atomic_bool M7PhotoOnlyPreferred = ATOMIC_VAR_INIT(false);
+
+static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
+    if (!value) return @{};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
+    return data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : @{};
+}
 
 // Own the encoded sensor output until Photos confirms saving it. A local
 // backup is optional: Apple's Camera process need not have a Documents sandbox.
@@ -45,6 +57,12 @@
 @property (nonatomic) NSUInteger captureLongEdge;
 @property (nonatomic) BOOL captureAvailable;
 @property (nonatomic) NSMutableDictionary *captureTrace;
+@property (nonatomic) NSString *controllerID;
+@property (nonatomic) NSString *sessionID;
+@property (nonatomic) BOOL photoOnlyRequested;
+@property (nonatomic) NSMutableDictionary *comparisonReport;
+@property (nonatomic) BOOL comparisonActive;
+@property (nonatomic) NSMutableArray *sessionEvents;
 @property (nonatomic) M7Storage *storage;
 @property (nonatomic) NSDictionary *lensDiagnostic;
 @property (nonatomic) NSMutableSet<NSString *> *photosInFlight;
@@ -120,6 +138,10 @@
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     self.sessionQueue = dispatch_queue_create("dev.manual7.session", DISPATCH_QUEUE_SERIAL);
     self.videoQueue = dispatch_queue_create("dev.manual7.peaking", DISPATCH_QUEUE_SERIAL);
+    self.controllerID = NSUUID.UUID.UUIDString;
+    self.sessionID = NSUUID.UUID.UUIDString;
+    self.photoOnlyRequested = atomic_load(&M7PhotoOnlyPreferred);
+    self.sessionEvents = [NSMutableArray new];
     self.session = [AVCaptureSession new]; M7MarkSessionOwned(self.session);
     self.peakingThreshold = .2;
 
@@ -276,7 +298,7 @@
         self.session.sessionPreset = AVCaptureSessionPresetPhoto;
         BOOL outputsOK = [self.session canAddOutput:self.photoOutput];
         if (outputsOK) [self.session addOutput:self.photoOutput];
-        BOOL videoOK = [self.session canAddOutput:self.videoOutput];
+        BOOL videoOK = !self.photoOnlyRequested && [self.session canAddOutput:self.videoOutput];
         if (videoOK) [self.session addOutput:self.videoOutput];
         [self.session commitConfiguration];
         if (!outputsOK || ![self selectDevice:AVCaptureDeviceTypeBuiltInWideAngleCamera error:&error]) {
@@ -284,6 +306,7 @@
         }
         self.configured = YES;
         [self.session startRunning];
+        [self recordSessionEvent:@"setup" details:[self sessionDiagnostic]];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.peakingSwitch.enabled = videoOK;
             [self message:videoOK ? @"Deslize para acessar os controles. DNG usa o sensor da lente selecionada." : @"Preview sem saída para peaking nesta configuração."];
@@ -314,7 +337,10 @@
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.1.4";
+    self.captureTrace[@"version"] = @"0.1.5";
+    self.captureTrace[@"controllerID"] = self.controllerID;
+    self.captureTrace[@"sessionID"] = self.sessionID;
+    self.captureTrace[@"processID"] = @(getpid());
     self.captureTrace[@"updatedAt"] = @(NSDate.date.timeIntervalSince1970);
     self.captureTrace[@"storage"] = self.storage.attempts ?: @[];
     NSError *error = nil;
@@ -329,6 +355,7 @@
     [self recordCaptureStage:@"error" details:M7ErrorDetails(error)];
     [self message:[NSString stringWithFormat:@"%@ (%ld) · Detalhes em Exportar → Ver diagnóstico.", error.localizedDescription ?: @"Falha de captura", (long)error.code]];
     dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; self.shareButton.enabled = YES; });
+    [self completeComparison:@"captureFailed"];
 }
 
 - (NSError *)captureExceptionError:(NSException *)exception {
@@ -415,7 +442,7 @@
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.1.4";
+    diagnostic[@"version"] = @"0.1.5";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -600,15 +627,25 @@
     BOOL raw = self.rawSwitch.on;
     NSUInteger longEdge = raw ? 0 : self.jpegLongEdge;
     dispatch_async(self.sessionQueue, ^{
+        if (self.comparisonActive) { [self message:@"Teste RAW em andamento; aguarde o relatório."]; return; }
+        [self captureRAW:raw longEdge:longEdge];
+    });
+}
+
+// sessionQueue only. Test configuration and submission run in one operation.
+- (void)captureRAW:(BOOL)raw longEdge:(NSUInteger)longEdge {
+
         if (self.pendingPhoto) { [self savePhotoToPhotos:self.pendingPhoto]; return; }
         if (!self.configured || !self.session.isRunning || self.captureBusy ||
             self.pendingExposure || self.pendingFocus || self.closing) {
             [self recordCaptureStage:@"captureBlocked" details:[self sessionDiagnostic]];
             [self message:@"Disparo indisponível. Abra Exportar → Ver diagnóstico."];
+            [self completeComparison:@"captureBlocked"];
             return;
         }
         self.captureID = 0;
         self.captureTrace = [NSMutableDictionary new];
+        if (self.comparisonActive) self.captureTrace[@"comparisonID"] = self.comparisonReport[@"id"];
         [self recordCaptureStage:@"requested" details:@{@"raw":@(raw), @"jpegLongEdge":@(longEdge),
             @"device":self.input.device.deviceType ?: @"", @"highResolutionEnabled":@(self.photoOutput.isHighResolutionCaptureEnabled),
             @"session":[self sessionDiagnostic]}];
@@ -618,6 +655,8 @@
             details:@{@"message":error.localizedDescription ?: @"Pasta indisponível"}];
         error = nil;
         @try {
+            if (self.photoOnlyRequested && ![self isPhotoOnlySession])
+                [NSException raise:NSInternalInconsistencyException format:@"O modo sem peaking foi solicitado, mas as saídas não correspondem. Disparo bloqueado; consulte o diagnóstico."];
             if (![self respondsToSelector:@selector(captureOutput:didFinishProcessingPhoto:error:)] ||
                 ![self respondsToSelector:@selector(captureOutput:didFinishCaptureForResolvedSettings:error:)]) {
                 [NSException raise:NSInvalidArgumentException format:@"Callbacks Objective-C de captura indisponíveis."];
@@ -645,8 +684,11 @@
             self.captureData = nil; self.captureError = nil; self.captureMetadata = nil;
             dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = NO; [self enableControls:NO]; });
             [self recordCaptureStage:@"submit" details:@{@"id":@(settings.uniqueID),
-                @"rawFormat":@(settings.rawPhotoPixelFormatType), @"highResolution":@(settings.isHighResolutionPhotoEnabled)}];
+                @"rawFormat":@(settings.rawPhotoPixelFormatType), @"highResolution":@(settings.isHighResolutionPhotoEnabled), @"session":[self sessionDiagnostic]}];
+            if (self.comparisonActive) self.comparisonReport[@"captureID"] = @(settings.uniqueID);
             [self message:@"Capturando…"];
+            if (self.photoOnlyRequested && ![self isPhotoOnlySession])
+                [NSException raise:NSInternalInconsistencyException format:@"As saídas mudaram antes do disparo. Captura bloqueada."];
             [self.photoOutput capturePhotoWithSettings:settings delegate:self];
             int64_t identifier = settings.uniqueID;
             __weak typeof(self) weakSelf = self;
@@ -662,7 +704,6 @@
             self.captureID = 0;
             [self finishCaptureWithError:[self captureExceptionError:exception]];
         }
-    });
 }
 
 - (void)captureOutput:(__unused AVCapturePhotoOutput *)output willBeginCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)settings {
@@ -770,7 +811,7 @@
         NSData *data = [NSJSONSerialization dataWithJSONObject:receipt options:NSJSONWritingPrettyPrinted error:&error];
         if (data) [data writeToURL:[photo.file URLByAppendingPathExtension:@"photos.json"] options:NSDataWritingAtomic error:&error];
     }
-    if (photo.captureID == self.captureID || photo.captureID == -1) [self recordCaptureStage:@"photos" details:receipt];
+    if (photo.captureID > 0 && photo.captureID == self.captureID) [self recordCaptureStage:@"photos" details:receipt];
     if (error) [self recordCaptureStage:@"photosReceiptError" details:@{@"message":error.localizedDescription}];
 }
 
@@ -786,6 +827,7 @@
         NSString *location = photo.file ? @"Foto só no M7. Use Exportar." : @"Foto só na memória. Toque em SALVAR FOTO PENDENTE; não encerre a Câmera.";
         [self message:[NSString stringWithFormat:@"%@ %@", location, reason]];
     }
+    if (photo.captureID == self.captureID) [self completeComparison:@"photosFailed"];
 }
 
 - (void)saveFileToPhotosIfAuthorized:(NSURL *)file captureID:(int64_t)captureID {
@@ -865,6 +907,7 @@
                 if (self.pendingPhoto == photo) self.pendingPhoto = nil;
                 if (photo.captureID == self.captureID || photo.captureID == -1)
                     [self message:photo.file ? @"Salvo no Fotos. Cópia também disponível em Exportar." : @"Salvo no Fotos. Sem cópia local no M7."];
+                if (photo.captureID == self.captureID) [self completeComparison:@"savedToPhotos"];
             });
         }];
     } @catch (NSException *exception) {
@@ -878,7 +921,9 @@
     for (AVCaptureOutput *output in self.session.outputs) [outputs addObject:NSStringFromClass(output.class)];
     CMVideoDimensions formatSize = {0, 0};
     if (device.activeFormat.formatDescription) formatSize = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription);
-    return @{@"configured":@(self.configured), @"running":@(self.session.isRunning),
+    return @{@"controllerID":self.controllerID, @"sessionID":self.sessionID, @"processID":@(getpid()),
+        @"photoOnlyRequested":@(self.photoOnlyRequested), @"photoOnlyObserved":@([self isPhotoOnlySession]),
+        @"comparisonID":self.comparisonReport[@"id"] ?: @"", @"comparisonActive":@(self.comparisonActive), @"configured":@(self.configured), @"running":@(self.session.isRunning),
         @"captureBusy":@(self.captureBusy), @"pendingExposure":@(self.pendingExposure),
         @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID),
         @"outputs":outputs, @"preset":self.session.sessionPreset ?: @"", @"interrupted":@(self.session.isInterrupted),
@@ -900,7 +945,13 @@
             id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
             [receipts addObject:@{@"filename":file.lastPathComponent, @"photos":value ?: @{}}];
         }
-        NSDictionary *diagnostic = @{@"version":@"0.1.4", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        NSMutableDictionary *comparison = [self.comparisonReport mutableCopy] ?: [NSMutableDictionary new];
+        if ([comparison[@"id"] isEqual:self.captureTrace[@"comparisonID"]]) {
+            [comparison removeObjectForKey:@"capture"];
+            comparison[@"captureReport"] = @"lastCapture";
+        }
+        NSDictionary *diagnostic = @{@"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
+            @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.1.5", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
             @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
             @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
             @"lastCapture":self.captureTrace ?: @{@"message":@"Nenhuma tentativa registrada nesta instalação."},
@@ -908,7 +959,7 @@
         NSData *json = [NSJSONSerialization dataWithJSONObject:diagnostic options:NSJSONWritingPrettyPrinted error:nil];
         NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
         dispatch_async(dispatch_get_main_queue(), ^{
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Diagnóstico M7 0.1.4" message:text preferredStyle:UIAlertControllerStyleAlert];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Diagnóstico M7 0.1.5" message:text preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 UIPasteboard.generalPasteboard.string = text; [self message:@"Diagnóstico copiado. Cole na conversa para análise."];
             }]];
@@ -919,15 +970,24 @@
 }
 
 - (void)presentExportController:(UIViewController *)controller {
+    [self presentExportController:controller attempt:0];
+}
+
+- (void)presentExportController:(UIViewController *)controller attempt:(NSUInteger)attempt {
+    if (self.closing || self.isBeingDismissed || !self.view.window) return;
     controller.popoverPresentationController.sourceView = self.shareButton;
-    // An export menu may still be dismissing when its action handler runs.
     UIViewController *presented = self.presentedViewController;
-    if (presented.isBeingDismissed && presented.transitionCoordinator) {
-        [presented.transitionCoordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
-            [self presentViewController:controller animated:YES completion:nil];
-        }];
+    if (presented.isBeingDismissed || self.isBeingPresented) {
+        // Wait for UIAlertController's own action dismissal. Never dismiss M7
+        // to replace a menu whose transition has already started.
+        if (attempt >= 20) { [self message:@"Relatório disponível em Exportar → Ver diagnóstico."]; return; }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 10), dispatch_get_main_queue(), ^{
+            [self presentExportController:controller attempt:attempt + 1];
+        });
     } else if (presented) {
-        [self dismissViewControllerAnimated:YES completion:^{ [self presentViewController:controller animated:YES completion:nil]; }];
+        [presented dismissViewControllerAnimated:YES completion:^{
+            [self presentExportController:controller attempt:attempt + 1];
+        }];
     } else [self presentViewController:controller animated:YES completion:nil];
 }
 
@@ -937,16 +997,24 @@
         NSArray<NSURL *> *files = [self.storage imageFilesWithError:&error];
         BOOL pending = self.pendingPhoto != nil;
         BOOL hasVideoOutput = [self.session.outputs containsObject:self.videoOutput];
+        BOOL canRestore = self.photoOnlyRequested || !hasVideoOutput;
         dispatch_async(dispatch_get_main_queue(), ^{
             NSString *message = error ? [NSString stringWithFormat:@"Falha ao ler uma pasta: %@", error.localizedDescription] :
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.4" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.5" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
-            [menu addAction:[UIAlertAction actionWithTitle:hasVideoOutput ? @"Testar RAW sem saída de peaking" : @"Restaurar saída de peaking"
-                style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                    [self setPeakingOutputAttached:!hasVideoOutput];
+            [menu addAction:[UIAlertAction actionWithTitle:@"Executar teste RAW sem peaking" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
+            if (canRestore) [menu addAction:[UIAlertAction actionWithTitle:@"Restaurar saída de peaking" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    dispatch_async(self.sessionQueue, ^{
+                        if (self.captureBusy || self.pendingPhoto || self.comparisonActive || self.closing) {
+                            [self message:@"Conclua o teste ou salve a foto pendente antes de restaurar."]; return;
+                        }
+                        [self configurePeakingOutput:YES];
+                    });
                 }]];
             if (pending) [menu addAction:[UIAlertAction actionWithTitle:@"Salvar foto pendente no Fotos" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 dispatch_async(self.sessionQueue, ^{ if (self.pendingPhoto) [self savePhotoToPhotos:self.pendingPhoto]; });
@@ -964,41 +1032,84 @@
     });
 }
 
-- (void)setPeakingOutputAttached:(BOOL)attached {
-    // Controlled comparison for RAW failures. Rebuild only while idle and
-    // restore AUTO/AF so format-dependent manual limits cannot become stale.
-    dispatch_async(self.sessionQueue, ^{
-        if (!self.configured || !self.input || !self.videoOutput) {
-            [self message:@"A câmera precisa estar configurada para este teste. Feche e reabra M7."]; return;
-        }
-        if (self.captureBusy || self.pendingPhoto || self.closing) {
-            [self message:@"Conclua a captura ou salve a foto pendente antes deste teste."]; return;
-        }
-        if ([self.session.outputs containsObject:self.videoOutput] == attached) return;
-        self.configured = NO;
-        self.peakingEnabled = NO;
-        dispatch_async(dispatch_get_main_queue(), ^{ [self enableControls:NO]; self.peakingView.image = nil; });
+- (BOOL)isPhotoOnlySession {
+    NSArray *outputs = self.session.outputs;
+    return outputs.count == 1 && outputs.firstObject == self.photoOutput;
+}
+
+- (void)recordSessionEvent:(NSString *)event details:(NSDictionary *)details {
+    [self.sessionEvents addObject:@{@"event":event, @"time":@(NSDate.date.timeIntervalSince1970),
+        @"sessionID":self.sessionID, @"details":M7JSONSnapshot(details)}];
+    if (self.sessionEvents.count > 8) [self.sessionEvents removeObjectAtIndex:0];
+}
+
+// Does not toggle. Repeating the same requested mode is idempotent.
+- (BOOL)configurePeakingOutput:(BOOL)attached {
+    if (!self.configured || !self.input || !self.videoOutput || self.captureBusy || self.pendingPhoto || self.closing) {
+        [self recordSessionEvent:@"configurationRejected" details:[self sessionDiagnostic]];
+        [self message:@"A sessão não está livre para reconfigurar. Consulte o diagnóstico."]; return NO;
+    }
+    self.photoOnlyRequested = !attached;
+    atomic_store(&M7PhotoOnlyPreferred, !attached);
+    [self recordSessionEvent:@"configurationRequested" details:@{@"attachVideoOutput":@(attached), @"before":[self sessionDiagnostic]}];
+    self.configured = NO; self.peakingEnabled = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ [self enableControls:NO]; self.peakingView.image = nil; });
+    NSError *error = nil;
+    BOOL ok = NO;
+    @try {
         [self.session stopRunning];
         [self.session beginConfiguration];
-        if (attached && [self.session canAddOutput:self.videoOutput]) [self.session addOutput:self.videoOutput];
-        else if (!attached) [self.session removeOutput:self.videoOutput];
-        [self.session commitConfiguration];
-        NSError *error = nil;
+        @try {
+            if (attached) {
+                if (![self.session.outputs containsObject:self.videoOutput] && [self.session canAddOutput:self.videoOutput])
+                    [self.session addOutput:self.videoOutput];
+            } else {
+                // Validate actual topology, not only membership of a saved pointer.
+                for (AVCaptureOutput *output in self.session.outputs)
+                    if ([output isKindOfClass:AVCaptureVideoDataOutput.class]) [self.session removeOutput:output];
+            }
+        } @finally { [self.session commitConfiguration]; }
         AVCaptureDeviceType type = self.input.device.deviceType ?: AVCaptureDeviceTypeBuiltInWideAngleCamera;
-        BOOL ok = [self selectDevice:type error:&error];
-        self.configured = ok;
+        ok = [self selectDevice:type error:&error];
         if (ok) [self.session startRunning];
-        BOOL hasVideo = [self.session.outputs containsObject:self.videoOutput];
-        [self recordCaptureStage:@"comparisonSession" details:@{@"requestedPeakingOutput":@(attached),
-            @"attachedPeakingOutput":@(hasVideo), @"errorDetails":M7ErrorDetails(error), @"session":[self sessionDiagnostic]}];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.peakingSwitch.on = NO; self.peakingSwitch.enabled = hasVideo;
-        });
-        [self message:!ok ? error.localizedDescription ?: @"Falha ao configurar o teste; feche e reabra M7." :
-            attached && !hasVideo ? @"A sessão recusou a saída de peaking. Consulte o diagnóstico." :
-            hasVideo ? @"Saída de peaking restaurada. Exposição AUTO e foco AF." :
-                @"Teste sem saída de peaking. Exposição AUTO e foco AF; fotografe em RAW."];
+        self.configured = ok;
+        ok = ok && self.session.isRunning && (attached ? [self.session.outputs containsObject:self.videoOutput] : [self isPhotoOnlySession]);
+    } @catch (NSException *exception) { error = [self captureExceptionError:exception]; }
+    BOOL hasVideo = [self.session.outputs containsObject:self.videoOutput];
+    [self recordSessionEvent:@"configurationFinished" details:@{@"matched":@(ok), @"session":[self sessionDiagnostic], @"error":M7ErrorDetails(error)}];
+    dispatch_async(dispatch_get_main_queue(), ^{ self.peakingSwitch.on = NO; self.peakingSwitch.enabled = hasVideo; });
+    [self message:!ok ? @"A configuração solicitada não foi confirmada. Consulte o diagnóstico." :
+        attached ? @"Saída de peaking restaurada. Exposição AUTO e foco AF." : @"Sessão sem peaking verificada. Preparando disparo RAW…"];
+    return ok;
+}
+
+- (void)runRAWComparison {
+    dispatch_async(self.sessionQueue, ^{
+        if (self.comparisonActive || self.captureBusy || self.pendingPhoto || self.closing) {
+            [self message:@"Já existe uma captura ou foto pendente. Conclua-a antes do teste."]; return;
+        }
+        self.comparisonReport = [@{@"id":NSUUID.UUID.UUIDString, @"startedAt":@(NSDate.date.timeIntervalSince1970),
+            @"controllerID":self.controllerID, @"sessionID":self.sessionID, @"processID":@(getpid()),
+            @"status":@"configuring", @"before":[self sessionDiagnostic]} mutableCopy];
+        self.comparisonActive = YES;
+        if (![self configurePeakingOutput:NO]) { [self completeComparison:@"configurationFailed"]; return; }
+        self.comparisonReport[@"verifiedSession"] = M7JSONSnapshot([self sessionDiagnostic]);
+        self.comparisonReport[@"status"] = @"capturing";
+        // RAW is explicit; no second user action or delayed UISwitch read.
+        [self captureRAW:YES longEdge:0];
     });
+}
+
+- (void)completeComparison:(NSString *)outcome {
+    if (!self.comparisonActive) return;
+    self.comparisonActive = NO;
+    self.comparisonReport[@"status"] = outcome;
+    self.comparisonReport[@"finishedAt"] = @(NSDate.date.timeIntervalSince1970);
+    self.comparisonReport[@"after"] = M7JSONSnapshot([self sessionDiagnostic]);
+    if ([self.captureTrace[@"comparisonID"] isEqual:self.comparisonReport[@"id"]])
+        self.comparisonReport[@"capture"] = M7JSONSnapshot(self.captureTrace);
+    [self.storage writeJSON:self.comparisonReport filename:@"ultimo-teste-raw.json" error:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{ if (!self.closing) [self showDiagnostic]; });
 }
 
 - (void)actionsForFile:(NSURL *)file {
@@ -1078,7 +1189,8 @@
         NSError *error = note.userInfo[AVCaptureSessionErrorKey];
         [self message:[NSString stringWithFormat:@"Câmera: %@. Feche e reabra M7.", error.localizedDescription ?: @"erro de sessão"]];
         dispatch_async(self.sessionQueue, ^{
-            [self recordCaptureStage:@"sessionError" details:M7ErrorDetails(error)];
+            [self recordSessionEvent:@"sessionError" details:M7ErrorDetails(error)];
+            [self completeComparison:@"sessionError"];
             self.configured = NO; self.captureBusy = NO;
             self.pendingExposure = NO; self.pendingFocus = NO;
             ++self.exposureRevision; ++self.focusRevision;

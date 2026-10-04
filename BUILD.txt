@@ -1,15 +1,17 @@
-Manual7 0.1.4 — registro de build
-Data UTC: 2026-10-04T07:21:41.421857+00:00
+Manual7 0.1.5 — registro de build
+Data UTC: 2026-10-04T07:39:38.509038+00:00
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
-Build Objective-C: compilado, vinculado e assinado pelo Theos.
-Testes existentes: 11 aprovados (8 do núcleo C; 3 de contrato dos callbacks).
-Análise estática: controlador e M7ErrorDetails sem diagnósticos antes da guarda adicional de sessão configurada; guarda compilada no pacote final.
-Teste nativo de erros: verificado sintaticamente com SDK iOS; execução não realizada no Linux.
-Estado no aparelho informado pelo usuário: JPEG salva no Fotos na 0.1.3; RAW falha com -11800 e zero bytes.
-0.1.4: detalhes de NSError/NSUnderlyingError e comparação opcional sem AVCaptureVideoDataOutput.
-Validação física desta versão: não realizada. Não há confirmação de correção RAW.
-SHA-256 do .deb: b7ae3da7128f30e1ee626f0895401f021bb4c08942aca3f5ee699c993c2a55b2
+Build: compilado, vinculado e assinado pelo Theos.
+Testes existentes: 11 aprovados (8 C; 3 contratos de callbacks com SDK iOS).
+Análise estática: M7CameraController.m sem diagnósticos.
+Mudança: teste RAW completo na fila de sessão, validação das saídas, ação idempotente e resultado independente do próximo disparo.
+Menus: transição aguardada; fechamento direcionado ao controlador apresentado.
+Modo sem peaking: preservado entre instâncias M7 no mesmo processo; processo/controlador/sessão/teste identificados no relatório.
+Limites dos testes: não executam UIKit/AVFoundation no aparelho nem comprovam correção do RAW.
+Estado informado pelo usuário: JPEG salva; RAW retorna -11800 / -12780. Motivo da reaparição da saída de vídeo ainda não reproduzido localmente.
+Validação física da 0.1.5: não realizada.
+SHA-256 do .deb: 86d0fa0a1b3881e34aa3b3036ce33c5197fbc7768249a91dc640ba008612db5c

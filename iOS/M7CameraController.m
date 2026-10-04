@@ -1,10 +1,11 @@
 #import "M7CameraController.h"
 #import "M7DeviceControls.h"
+#import "M7JPEG.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
 
-@interface M7CameraController () <AVCapturePhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
+@interface M7CameraController () <M7RequiredPhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic) dispatch_queue_t sessionQueue;
 @property (nonatomic) dispatch_queue_t videoQueue;
 @property (nonatomic) AVCaptureSession *session;
@@ -26,6 +27,11 @@
 @property (nonatomic) UISegmentedControl *focusMode;
 @property (nonatomic) UISegmentedControl *lens;
 @property (nonatomic) UISwitch *rawSwitch;
+@property (nonatomic) UIButton *sizeButton;
+@property (nonatomic) NSUInteger jpegLongEdge;
+@property (nonatomic) NSUInteger captureLongEdge;
+@property (nonatomic) BOOL captureAvailable;
+@property (nonatomic) NSMutableDictionary *captureTrace;
 @property (nonatomic) UISwitch *peakingSwitch;
 @property (nonatomic) UIButton *shutterButton;
 @property (nonatomic) UIButton *shareButton;
@@ -157,7 +163,11 @@
         forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
     [stack addArrangedSubview:[self row:@"Perto/longe" control:self.focusSlider]];
     self.rawSwitch = [UISwitch new]; self.rawSwitch.on = YES;
+    [self.rawSwitch addTarget:self action:@selector(updateSizeControl) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"DNG RAW" control:self.rawSwitch]];
+    self.sizeButton = [self button:@"Original" action:@selector(chooseJPEGSize)];
+    self.sizeButton.accessibilityLabel = @"Tamanho da fotografia JPEG";
+    [stack addArrangedSubview:[self row:@"Tamanho" control:self.sizeButton]];
     self.peakingSwitch = [UISwitch new];
     [self.peakingSwitch addTarget:self action:@selector(changePeaking) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"Peaking" control:self.peakingSwitch]];
@@ -259,6 +269,69 @@
         URLByAppendingPathComponent:@"Manual7" isDirectory:YES];
 }
 
+// Called only on sessionQueue. The file survives a process crash/relaunch.
+- (void)recordCaptureStage:(NSString *)stage details:(NSDictionary *)details {
+    if (!self.captureTrace) self.captureTrace = [NSMutableDictionary new];
+    NSMutableArray *events = self.captureTrace[@"events"];
+    if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
+    [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
+    if (events.count > 24) [events removeObjectAtIndex:0];
+    self.captureTrace[@"version"] = @"0.1.1";
+    NSError *error = nil;
+    [NSFileManager.defaultManager createDirectoryAtURL:self.outputDirectory withIntermediateDirectories:YES attributes:nil error:&error];
+    if ([NSJSONSerialization isValidJSONObject:self.captureTrace]) {
+        NSData *json = [NSJSONSerialization dataWithJSONObject:self.captureTrace options:NSJSONWritingPrettyPrinted error:&error];
+        if (json) [json writeToURL:[self.outputDirectory URLByAppendingPathComponent:@"ultima-captura.json"] options:NSDataWritingAtomic error:&error];
+    }
+    if (error) NSLog(@"[Manual7] Capture diagnostic: %@", error);
+}
+
+- (void)finishCaptureWithError:(NSError *)error {
+    self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil;
+    [self recordCaptureStage:@"error" details:@{@"domain":error.domain ?: @"Manual7",
+        @"code":@(error.code), @"message":error.localizedDescription ?: @"Falha de captura"}];
+    [self message:[NSString stringWithFormat:@"%@ · Detalhes em Exportar → Última captura.", error.localizedDescription ?: @"Falha de captura"]];
+    dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; self.shareButton.enabled = YES; });
+}
+
+- (NSError *)captureExceptionError:(NSException *)exception {
+    return [NSError errorWithDomain:@"Manual7.CaptureException" code:1 userInfo:@{
+        NSLocalizedDescriptionKey:[NSString stringWithFormat:@"%@: %@", exception.name, exception.reason ?: @"Captura recusada"]}];
+}
+
+- (void)updateSizeControl {
+    self.sizeButton.enabled = self.captureAvailable && !self.rawSwitch.on;
+    NSString *title = self.rawSwitch.on ? @"Original do sensor" : @"Original";
+    if (!self.rawSwitch.on) {
+        double width = [self.limits[@"nativeWidth"] doubleValue], height = [self.limits[@"nativeHeight"] doubleValue];
+        double scale = self.jpegLongEdge && MAX(width, height) > 0 ? MIN(1.0, self.jpegLongEdge / MAX(width, height)) : 1.0;
+        NSString *label = self.jpegLongEdge ? @"JPEG" : @"Original";
+        if (width > 0 && height > 0) title = [NSString stringWithFormat:@"%@ · %.0f × %.0f", label, round(width*scale), round(height*scale)];
+    }
+    [self.sizeButton setTitle:title forState:UIControlStateNormal];
+}
+
+- (void)chooseJPEGSize {
+    if (self.rawSwitch.on || !self.captureAvailable) return;
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Tamanho do JPEG"
+        message:@"Original preserva a foto capturada. Os demais tamanhos reduzem a imagem mantendo a proporção."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    double width = [self.limits[@"nativeWidth"] doubleValue], height = [self.limits[@"nativeHeight"] doubleValue];
+    for (NSNumber *number in @[@0, @3264, @2560, @2048, @1600, @1280]) {
+        NSUInteger edge = number.unsignedIntegerValue;
+        if (edge && edge >= MAX(width, height)) continue;
+        double scale = edge && MAX(width, height) > 0 ? edge / MAX(width, height) : 1;
+        NSString *label = edge ? @"JPEG" : @"Original";
+        NSString *title = [NSString stringWithFormat:@"%@ · %.0f × %.0f", label, round(width*scale), round(height*scale)];
+        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            self.jpegLongEdge = edge; [self updateSizeControl];
+        }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    menu.popoverPresentationController.sourceView = self.sizeButton;
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
 - (BOOL)selectDevice:(AVCaptureDeviceType)type error:(NSError **)error {
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithDeviceType:type mediaType:AVMediaTypeVideo position:AVCaptureDevicePositionBack];
     if (!device) {
@@ -292,7 +365,9 @@
         if (c.isVideoOrientationSupported) c.videoOrientation = AVCaptureVideoOrientationPortrait;
         if (c.isVideoStabilizationSupported) c.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeOff;
     }
-    NSDictionary *limits = self.controls.capabilities;
+    NSMutableDictionary *limits = [self.controls.capabilities mutableCopy];
+    CMVideoDimensions native = device.activeFormat.highResolutionStillImageDimensions;
+    limits[@"nativeWidth"] = @(native.width); limits[@"nativeHeight"] = @(native.height);
     int selected = 0;
     m7_shutter_nearest(CMTimeGetSeconds(device.exposureDuration),
         CMTimeGetSeconds(device.activeFormat.minExposureDuration),
@@ -303,7 +378,7 @@
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.1.0";
+    diagnostic[@"version"] = @"0.1.1";
     NSURL *directory = self.outputDirectory;
     [NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
     NSData *json = [NSJSONSerialization dataWithJSONObject:diagnostic options:NSJSONWritingPrettyPrinted error:nil];
@@ -322,6 +397,7 @@
         self.evStepper.maximumValue = floor([limits[@"maxEV"] doubleValue] * 3);
         self.evStepper.value = 0;
         self.rawSwitch.enabled = raw; self.rawSwitch.on = raw;
+        [self updateSizeControl];
         self.peakingView.image = nil;
         self.shareButton.enabled = YES;
     });
@@ -329,6 +405,7 @@
 }
 
 - (void)enableControls:(BOOL)ready {
+    self.captureAvailable = ready;
     self.lens.enabled = ready;
     self.exposureMode.enabled = ready; self.focusMode.enabled = ready;
     BOOL manual = ready && self.exposureMode.selectedSegmentIndex == 1 && [self.limits[@"manualExposure"] boolValue];
@@ -337,6 +414,7 @@
     self.focusSlider.enabled = ready && self.focusMode.selectedSegmentIndex == 1 && [self.limits[@"manualFocus"] boolValue];
     self.evStepper.enabled = ready && self.exposureMode.selectedSegmentIndex == 0;
     self.shutterButton.enabled = ready;
+    [self updateSizeControl];
 }
 
 - (void)refresh {
@@ -480,71 +558,177 @@
 
 - (void)capture {
     BOOL raw = self.rawSwitch.on;
+    NSUInteger longEdge = raw ? 0 : self.jpegLongEdge;
     dispatch_async(self.sessionQueue, ^{
         if (!self.configured || !self.session.isRunning || self.captureBusy ||
             self.pendingExposure || self.pendingFocus || self.closing) return;
+        self.captureID = 0;
+        self.captureTrace = [NSMutableDictionary new];
+        [self recordCaptureStage:@"requested" details:@{@"raw":@(raw), @"jpegLongEdge":@(longEdge),
+            @"device":self.input.device.deviceType ?: @"", @"highResolutionEnabled":@(self.photoOutput.isHighResolutionCaptureEnabled)}];
         NSError *error = nil;
-        AVCapturePhotoSettings *settings = raw ? [self.controls rawSettingsForOutput:self.photoOutput error:&error] :
-            [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey: AVVideoCodecTypeJPEG}];
-        if (!settings) { [self message:error.localizedDescription]; return; }
-        settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationSpeed;
-        settings.flashMode = AVCaptureFlashModeOff;
-        if (!raw) settings.highResolutionPhotoEnabled = YES;
-        self.captureBusy = YES; self.captureRAW = raw; self.captureID = settings.uniqueID;
-        self.captureData = nil; self.captureError = nil; self.captureMetadata = nil;
-        dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = NO; [self enableControls:NO]; });
-        [self message:@"Capturando…"];
-        [self.photoOutput capturePhotoWithSettings:settings delegate:self];
+        @try {
+            if (![self respondsToSelector:@selector(captureOutput:didFinishProcessingPhoto:error:)] ||
+                ![self respondsToSelector:@selector(captureOutput:didFinishCaptureForResolvedSettings:error:)]) {
+                [NSException raise:NSInvalidArgumentException format:@"Callbacks Objective-C de captura indisponíveis."];
+            }
+            AVCaptureConnection *connection = [self.photoOutput connectionWithMediaType:AVMediaTypeVideo];
+            if (!connection || !connection.isEnabled || !connection.isActive)
+                [NSException raise:NSInvalidArgumentException format:@"A conexão de fotografia ainda não está ativa."];
+            if (raw && (fabs(self.input.device.videoZoomFactor - 1.0) > .0001 ||
+                        fabs(connection.videoScaleAndCropFactor - 1.0) > .0001))
+                [NSException raise:NSInvalidArgumentException format:@"DNG exige zoom e recorte digital em 1×."];
+            if (!raw && (![self.photoOutput.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG] ||
+                         !self.photoOutput.isHighResolutionCaptureEnabled))
+                [NSException raise:NSInvalidArgumentException format:@"JPEG na resolução original indisponível nesta sessão."];
+            AVCapturePhotoSettings *settings = raw ? [self.controls rawSettingsForOutput:self.photoOutput error:&error] :
+                [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey:AVVideoCodecTypeJPEG}];
+            if (!settings) { [self finishCaptureWithError:error]; return; }
+            settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationSpeed;
+            if (![self.photoOutput.supportedFlashModes containsObject:@(AVCaptureFlashModeOff)])
+                [NSException raise:NSInvalidArgumentException format:@"Flash desligado indisponível nesta configuração."];
+            settings.flashMode = AVCaptureFlashModeOff;
+            // iOS 15 API. Smaller JPEG sizes are derived after full-size capture.
+            settings.highResolutionPhotoEnabled = !raw;
+            self.captureBusy = YES; self.captureRAW = raw; self.captureID = settings.uniqueID;
+            self.captureLongEdge = longEdge;
+            self.captureData = nil; self.captureError = nil; self.captureMetadata = nil;
+            dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = NO; [self enableControls:NO]; });
+            [self recordCaptureStage:@"submit" details:@{@"id":@(settings.uniqueID),
+                @"rawFormat":@(settings.rawPhotoPixelFormatType), @"highResolution":@(settings.isHighResolutionPhotoEnabled)}];
+            [self message:@"Capturando…"];
+            [self.photoOutput capturePhotoWithSettings:settings delegate:self];
+            int64_t identifier = settings.uniqueID;
+            __weak typeof(self) weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), self.sessionQueue, ^{
+                typeof(self) owner = weakSelf;
+                if (!owner || !owner.captureBusy || owner.captureID != identifier) return;
+                owner.captureID = 0; owner.configured = NO;
+                [owner finishCaptureWithError:[NSError errorWithDomain:@"Manual7.Timeout" code:1 userInfo:@{
+                    NSLocalizedDescriptionKey:@"A captura não terminou em 30 s. Feche e reabra M7."}]];
+                [owner.session stopRunning];
+            });
+        } @catch (NSException *exception) {
+            self.captureID = 0;
+            [self finishCaptureWithError:[self captureExceptionError:exception]];
+        }
     });
 }
 
-- (void)photoOutput:(__unused AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(NSError *)error {
-    NSData *data = error ? nil : photo.fileDataRepresentation;
-    int64_t captureID = photo.resolvedSettings.uniqueID;
-    dispatch_async(self.sessionQueue, ^{
-        if (captureID != self.captureID) return;
-        self.captureData = data; self.captureError = error; self.captureMetadata = photo.metadata;
-    });
-}
-
-- (void)photoOutput:(__unused AVCapturePhotoOutput *)output didFinishCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)settings error:(NSError *)error {
+- (void)captureOutput:(__unused AVCapturePhotoOutput *)output willBeginCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)settings {
     dispatch_async(self.sessionQueue, ^{
         if (settings.uniqueID != self.captureID) return;
-        NSError *failure = error ?: self.captureError;
-        NSURL *file = nil;
-        if (!failure && self.captureData.length) {
-            NSURL *directory = self.outputDirectory;
-            if ([NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&failure]) {
+        CMVideoDimensions dimensions = self.captureRAW ? settings.rawPhotoDimensions : settings.photoDimensions;
+        [self recordCaptureStage:@"willBegin" details:@{@"width":@(dimensions.width), @"height":@(dimensions.height)}];
+    });
+}
+
+- (void)captureOutput:(__unused AVCapturePhotoOutput *)output didFinishProcessingPhoto:(AVCapturePhoto *)photo error:(NSError *)error {
+    // AVFoundation invokes callbacks on one queue. Enqueue in that order; keep
+    // the immutable AVCapturePhoto alive until its representation is copied.
+    dispatch_async(self.sessionQueue, ^{
+        if (photo.resolvedSettings.uniqueID != self.captureID) return;
+        @autoreleasepool {
+            [self recordCaptureStage:@"processing" details:@{@"raw":@(photo.isRawPhoto)}];
+            @try {
+                self.captureError = error;
+                self.captureData = error ? nil : photo.fileDataRepresentation;
+                self.captureMetadata = photo.metadata;
+                if (!error && !self.captureData.length)
+                    self.captureError = [NSError errorWithDomain:@"Manual7.Capture" code:2
+                        userInfo:@{NSLocalizedDescriptionKey:@"O sensor não retornou um arquivo de imagem."}];
+                [self recordCaptureStage:@"representation" details:@{@"bytes":@(self.captureData.length),
+                    @"error":self.captureError.localizedDescription ?: @""}];
+            } @catch (NSException *exception) {
+                self.captureError = [self captureExceptionError:exception];
+            }
+        }
+    });
+}
+
+- (void)captureOutput:(__unused AVCapturePhotoOutput *)output didFinishCaptureForResolvedSettings:(AVCaptureResolvedPhotoSettings *)settings error:(NSError *)error {
+    dispatch_async(self.sessionQueue, ^{
+        if (settings.uniqueID != self.captureID) return;
+        @autoreleasepool {
+            NSError *failure = error ?: self.captureError;
+            if (failure || !self.captureData.length) {
+                [self finishCaptureWithError:failure ?: [NSError errorWithDomain:@"Manual7.Capture" code:3
+                    userInfo:@{NSLocalizedDescriptionKey:@"A captura terminou sem imagem."}]];
+                return;
+            }
+            NSURL *file = nil;
+            NSError *resizeError = nil;
+            @try {
+                [self recordCaptureStage:@"saveOriginal" details:nil];
+                NSURL *directory = self.outputDirectory;
+                if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&failure]) {
+                    [self finishCaptureWithError:failure]; return;
+                }
                 file = [directory URLByAppendingPathComponent:[NSString stringWithFormat:@"M7-%@.%@", NSUUID.UUID.UUIDString, self.captureRAW ? @"dng" : @"jpg"]];
-                if (![self.captureData writeToURL:file options:NSDataWritingAtomic error:&failure]) file = nil;
-                if (file && [NSJSONSerialization isValidJSONObject:self.captureMetadata]) {
+                // Preserve the source before any optional resize/Photos operation.
+                if (![self.captureData writeToURL:file options:NSDataWritingAtomic error:&failure]) {
+                    [self finishCaptureWithError:failure]; return;
+                }
+                if (!self.captureRAW && self.captureLongEdge) {
+                    [self recordCaptureStage:@"resizeJPEG" details:@{@"longEdge":@(self.captureLongEdge)}];
+                    @try {
+                        NSData *scaled = M7JPEGForLongEdge(self.captureData, self.captureLongEdge, &resizeError);
+                        if (scaled && [scaled writeToURL:file options:NSDataWritingAtomic error:&resizeError]) {
+                            self.captureData = scaled;
+                            self.captureMetadata = M7ImageProperties(scaled);
+                        }
+                    } @catch (NSException *exception) {
+                        resizeError = [self captureExceptionError:exception];
+                    }
+                }
+                NSDictionary *properties = M7ImageProperties(self.captureData);
+                [self recordCaptureStage:@"saved" details:@{@"filename":file.lastPathComponent,
+                    @"bytes":@(self.captureData.length), @"width":properties[@"PixelWidth"] ?: @0,
+                    @"height":properties[@"PixelHeight"] ?: @0, @"resizeError":resizeError.localizedDescription ?: @""}];
+                if (self.captureMetadata && [NSJSONSerialization isValidJSONObject:self.captureMetadata]) {
                     NSData *metadata = [NSJSONSerialization dataWithJSONObject:self.captureMetadata options:NSJSONWritingPrettyPrinted error:nil];
                     [metadata writeToURL:[[file URLByDeletingPathExtension] URLByAppendingPathExtension:@"json"] atomically:YES];
                 }
+            } @catch (NSException *exception) {
+                [self finishCaptureWithError:[self captureExceptionError:exception]];
+                return;
+            } @finally {
+                self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil;
+                dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; self.shareButton.enabled = YES; });
             }
-        }
-        self.captureBusy = NO; self.captureData = nil;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.closeButton.enabled = YES;
-            if (file) { self.lastFile = file; self.shareButton.enabled = YES; }
-        });
-        if (!file) { [self message:failure.localizedDescription ?: @"A captura não retornou dados."]; return; }
-        [self message:@"Arquivo salvo. Use Exportar para guardar no app Arquivos ou compartilhar."];
-        // The system Camera may already have access. Never request access without
-        // a host usage-description key; a tweak must not modify Camera.app's plist.
-        PHAuthorizationStatus authorization = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
-        if (authorization == PHAuthorizationStatusAuthorized || authorization == PHAuthorizationStatusLimited) {
-            [PHPhotoLibrary.sharedPhotoLibrary performChanges:^{
-                PHAssetCreationRequest *asset = [PHAssetCreationRequest creationRequestForAsset];
-                PHAssetResourceCreationOptions *options = [PHAssetResourceCreationOptions new];
-                options.originalFilename = file.lastPathComponent;
-                [asset addResourceWithType:PHAssetResourceTypePhoto fileURL:file options:options];
-            } completionHandler:^(BOOL success, NSError *saveError) {
-                [self message:success ? @"Salvo no Fotos e disponível em Exportar." :
-                    [NSString stringWithFormat:@"Arquivo preservado; Fotos: %@. Use Exportar.", saveError.localizedDescription ?: @"falha ao salvar"]];
-            }];
+            dispatch_async(dispatch_get_main_queue(), ^{ self.lastFile = file; });
+            if (resizeError) {
+                [self message:@"Falha ao reduzir: o JPEG original foi preservado. Use Exportar → Última captura."];
+                return;
+            }
+            [self message:@"Arquivo salvo. Use Exportar para guardar no app Arquivos ou compartilhar."];
+            [self saveFileToPhotosIfAuthorized:file captureID:settings.uniqueID];
         }
     });
+}
+
+- (void)saveFileToPhotosIfAuthorized:(NSURL *)file captureID:(int64_t)captureID {
+    @try {
+        PHAuthorizationStatus authorization = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
+        [self recordCaptureStage:@"photosAuthorization" details:@{@"status":@(authorization)}];
+        if (authorization != PHAuthorizationStatusAuthorized && authorization != PHAuthorizationStatusLimited) return;
+        [PHPhotoLibrary.sharedPhotoLibrary performChanges:^{
+            PHAssetCreationRequest *asset = [PHAssetCreationRequest creationRequestForAsset];
+            PHAssetResourceCreationOptions *options = [PHAssetResourceCreationOptions new];
+            options.originalFilename = file.lastPathComponent;
+            [asset addResourceWithType:PHAssetResourceTypePhoto fileURL:file options:options];
+        } completionHandler:^(BOOL success, NSError *saveError) {
+            dispatch_async(self.sessionQueue, ^{
+                if (self.captureID != captureID) return;
+                [self recordCaptureStage:@"photosFinished" details:@{@"success":@(success), @"error":saveError.localizedDescription ?: @""}];
+                [self message:success ? @"Salvo no Fotos e disponível em Exportar." :
+                    [NSString stringWithFormat:@"Arquivo preservado; Fotos: %@. Use Exportar.", saveError.localizedDescription ?: @"falha ao salvar"]];
+            });
+        }];
+    } @catch (NSException *exception) {
+        [self recordCaptureStage:@"photosException" details:@{@"message":exception.reason ?: exception.name}];
+        [self message:@"Arquivo salvo; não foi possível adicionar ao Fotos. Use Exportar."];
+    }
 }
 
 - (void)share {
@@ -571,6 +755,9 @@
     }
     [menu addAction:[UIAlertAction actionWithTitle:@"Diagnóstico da lente" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self shareFile:[self.outputDirectory URLByAppendingPathComponent:@"diagnostico.json"]];
+    }]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"Última captura (diagnóstico)" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self shareFile:[self.outputDirectory URLByAppendingPathComponent:@"ultima-captura.json"]];
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
     menu.popoverPresentationController.sourceView = self.shareButton;
@@ -644,6 +831,7 @@
         NSError *error = note.userInfo[AVCaptureSessionErrorKey];
         [self message:[NSString stringWithFormat:@"Câmera: %@. Feche e reabra M7.", error.localizedDescription ?: @"erro de sessão"]];
         dispatch_async(self.sessionQueue, ^{
+            [self recordCaptureStage:@"sessionError" details:@{@"message":error.localizedDescription ?: @"", @"code":@(error.code)}];
             self.configured = NO; self.captureBusy = NO;
             self.pendingExposure = NO; self.pendingFocus = NO;
             ++self.exposureRevision; ++self.focusRevision;

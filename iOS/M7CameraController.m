@@ -6,6 +6,17 @@
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
 
+// Own the encoded sensor output until Photos confirms saving it. A local
+// backup is optional: Apple's Camera process need not have a Documents sandbox.
+@interface M7Photo : NSObject
+@property (nonatomic) NSString *filename;
+@property (nonatomic) NSData *data;
+@property (nonatomic) NSURL *file;
+@property (nonatomic) int64_t captureID;
+@end
+@implementation M7Photo
+@end
+
 @interface M7CameraController () <M7RequiredPhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
 @property (nonatomic) dispatch_queue_t sessionQueue;
 @property (nonatomic) dispatch_queue_t videoQueue;
@@ -35,8 +46,10 @@
 @property (nonatomic) NSMutableDictionary *captureTrace;
 @property (nonatomic) M7Storage *storage;
 @property (nonatomic) NSDictionary *lensDiagnostic;
-@property (nonatomic) NSMutableSet<NSURL *> *photosInFlight;
-@property (nonatomic) NSMutableSet<NSURL *> *photosImported;
+@property (nonatomic) NSMutableSet<NSString *> *photosInFlight;
+@property (nonatomic) NSMutableSet<NSString *> *photosImported;
+@property (nonatomic) NSMutableDictionary<NSString *, NSDictionary *> *photoResults;
+@property (nonatomic) M7Photo *pendingPhoto;
 @property (nonatomic) UISwitch *peakingSwitch;
 @property (nonatomic) UIButton *shutterButton;
 @property (nonatomic) UIButton *shareButton;
@@ -229,6 +242,7 @@
         self.storage = [[M7Storage alloc] initWithCandidates:M7Storage.defaultCandidates];
         self.photosInFlight = [NSMutableSet new];
         self.photosImported = [NSMutableSet new];
+        self.photoResults = [NSMutableDictionary new];
         [self.storage prepare:nil];
         // Keep the previous attempt available until the next shutter press.
         for (NSURL *directory in self.storage.candidates) {
@@ -299,7 +313,7 @@
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.1.2";
+    self.captureTrace[@"version"] = @"0.1.3";
     self.captureTrace[@"updatedAt"] = @(NSDate.date.timeIntervalSince1970);
     self.captureTrace[@"storage"] = self.storage.attempts ?: @[];
     NSError *error = nil;
@@ -401,7 +415,7 @@
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.1.2";
+    diagnostic[@"version"] = @"0.1.3";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -443,14 +457,18 @@
     dispatch_async(self.sessionQueue, ^{
         AVCaptureDevice *d = self.input.device;
         BOOL ready = self.configured && self.session.isRunning && !self.captureBusy;
+        BOOL pending = self.pendingPhoto != nil;
+        BOOL importing = pending && [self.photosInFlight containsObject:self.pendingPhoto.filename];
         BOOL settled = !self.pendingExposure && !self.pendingFocus;
         double seconds = CMTimeGetSeconds(d.exposureDuration);
         NSString *shutter = seconds > 0 && seconds < 1 ? [NSString stringWithFormat:@"1/%.1f s", 1 / seconds] : [NSString stringWithFormat:@"%.4f s", seconds];
         NSString *readout = d ? [NSString stringWithFormat:@"ISO %.0f · %@ · f/%.1f\nEV %+.2f · Medidor %+.2f EV · Foco %.2f", d.ISO, shutter, d.lensAperture, d.exposureTargetBias, d.exposureTargetOffset, d.lensPosition] : @"Sem câmera ativa";
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self enableControls:ready];
-            self.shutterButton.enabled = ready && settled;
-            [self.shutterButton setTitle:ready && !settled ? @"Aguardando foco/exposição…" : @"●  FOTOGRAFAR" forState:UIControlStateNormal];
+            [self enableControls:ready && !pending];
+            self.shutterButton.enabled = pending ? !importing : ready && settled;
+            NSString *title = importing ? @"Salvando no Fotos…" : pending ? @"SALVAR FOTO PENDENTE" :
+                ready && !settled ? @"Aguardando foco/exposição…" : @"●  FOTOGRAFAR";
+            [self.shutterButton setTitle:title forState:UIControlStateNormal];
             self.readout.text = readout;
         });
     });
@@ -582,6 +600,7 @@
     BOOL raw = self.rawSwitch.on;
     NSUInteger longEdge = raw ? 0 : self.jpegLongEdge;
     dispatch_async(self.sessionQueue, ^{
+        if (self.pendingPhoto) { [self savePhotoToPhotos:self.pendingPhoto]; return; }
         if (!self.configured || !self.session.isRunning || self.captureBusy ||
             self.pendingExposure || self.pendingFocus || self.closing) {
             [self recordCaptureStage:@"captureBlocked" details:[self sessionDiagnostic]];
@@ -593,9 +612,10 @@
         [self recordCaptureStage:@"requested" details:@{@"raw":@(raw), @"jpegLongEdge":@(longEdge),
             @"device":self.input.device.deviceType ?: @"", @"highResolutionEnabled":@(self.photoOutput.isHighResolutionCaptureEnabled)}];
         NSError *error = nil;
-        if (![self.storage prepare:&error]) {
-            [self finishCaptureWithError:error]; return;
-        }
+        // A denied local backup must never prevent AVFoundation/PhotoKit.
+        if (![self.storage prepare:&error]) [self recordCaptureStage:@"localBackupUnavailable"
+            details:@{@"message":error.localizedDescription ?: @"Pasta indisponível"}];
+        error = nil;
         @try {
             if (![self respondsToSelector:@selector(captureOutput:didFinishProcessingPhoto:error:)] ||
                 ![self respondsToSelector:@selector(captureOutput:didFinishCaptureForResolvedSettings:error:)]) {
@@ -685,105 +705,122 @@
                     userInfo:@{NSLocalizedDescriptionKey:@"A captura terminou sem imagem."}]];
                 return;
             }
-            NSURL *file = nil;
+            M7Photo *photo = [M7Photo new];
+            photo.filename = [NSString stringWithFormat:@"M7-%@.%@", NSUUID.UUID.UUIDString, self.captureRAW ? @"dng" : @"jpg"];
+            photo.captureID = settings.uniqueID;
+            photo.data = self.captureData;
+            self.pendingPhoto = photo;
+            // Keep an owner independent of captureData before clearing callback state.
+            self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil;
+            dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; });
             NSError *resizeError = nil;
+            if (!self.captureRAW && self.captureLongEdge) {
+                @try {
+                    NSData *scaled = M7JPEGForLongEdge(photo.data, self.captureLongEdge, &resizeError);
+                    if (scaled.length) photo.data = scaled;
+                } @catch (NSException *exception) { resizeError = [self captureExceptionError:exception]; }
+            }
+            [self recordCaptureStage:@"encodedPhotoReady" details:@{@"filename":photo.filename,
+                @"bytes":@(photo.data.length), @"resizeError":resizeError.localizedDescription ?: @""}];
+            // This copy is useful for Exportar, but never a prerequisite for Photos.
             @try {
-                [self recordCaptureStage:@"saveOriginal" details:nil];
                 NSURL *directory = self.outputDirectory;
-                if (!directory || ![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:&failure]) {
-                    [self finishCaptureWithError:failure]; return;
+                if (directory) {
+                    NSURL *file = [directory URLByAppendingPathComponent:photo.filename];
+                    NSError *writeError = nil;
+                    if ([photo.data writeToURL:file options:NSDataWritingAtomic error:&writeError]) {
+                        photo.file = file;
+                        [self recordCaptureStage:@"localBackupSaved" details:@{@"filename":photo.filename}];
+                    } else [self recordCaptureStage:@"localBackupFailed" details:@{@"domain":writeError.domain ?: @"",
+                        @"code":@(writeError.code), @"message":writeError.localizedDescription ?: @"Falha ao gravar"}];
                 }
-                file = [directory URLByAppendingPathComponent:[NSString stringWithFormat:@"M7-%@.%@", NSUUID.UUID.UUIDString, self.captureRAW ? @"dng" : @"jpg"]];
-                // Preserve the source before any optional resize/Photos operation.
-                if (![self.captureData writeToURL:file options:NSDataWritingAtomic error:&failure]) {
-                    [self finishCaptureWithError:failure]; return;
-                }
-                if (!self.captureRAW && self.captureLongEdge) {
-                    [self recordCaptureStage:@"resizeJPEG" details:@{@"longEdge":@(self.captureLongEdge)}];
-                    @try {
-                        NSData *scaled = M7JPEGForLongEdge(self.captureData, self.captureLongEdge, &resizeError);
-                        if (scaled && [scaled writeToURL:file options:NSDataWritingAtomic error:&resizeError]) {
-                            self.captureData = scaled;
-                            self.captureMetadata = M7ImageProperties(scaled);
-                        }
-                    } @catch (NSException *exception) {
-                        resizeError = [self captureExceptionError:exception];
-                    }
-                }
-                NSDictionary *properties = M7ImageProperties(self.captureData);
-                [self recordCaptureStage:@"saved" details:@{@"filename":file.lastPathComponent,
-                    @"bytes":@(self.captureData.length), @"width":properties[@"PixelWidth"] ?: @0,
-                    @"height":properties[@"PixelHeight"] ?: @0, @"resizeError":resizeError.localizedDescription ?: @""}];
-                if (self.captureMetadata && [NSJSONSerialization isValidJSONObject:self.captureMetadata]) {
-                    NSData *metadata = [NSJSONSerialization dataWithJSONObject:self.captureMetadata options:NSJSONWritingPrettyPrinted error:nil];
-                    [metadata writeToURL:[[file URLByDeletingPathExtension] URLByAppendingPathExtension:@"json"] atomically:YES];
+                NSDictionary *properties = M7ImageProperties(photo.data);
+                [self recordCaptureStage:@"dimensions" details:@{@"width":properties[@"PixelWidth"] ?: @0,
+                    @"height":properties[@"PixelHeight"] ?: @0}];
+                if (photo.file && [NSJSONSerialization isValidJSONObject:properties]) {
+                    NSData *metadata = [NSJSONSerialization dataWithJSONObject:properties options:NSJSONWritingPrettyPrinted error:nil];
+                    [metadata writeToURL:[[photo.file URLByDeletingPathExtension] URLByAppendingPathExtension:@"json"] atomically:YES];
                 }
             } @catch (NSException *exception) {
-                [self finishCaptureWithError:[self captureExceptionError:exception]];
-                return;
-            } @finally {
-                self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil;
-                dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; self.shareButton.enabled = YES; });
+                [self recordCaptureStage:@"localBackupException" details:@{@"message":exception.reason ?: exception.name}];
             }
-            dispatch_async(dispatch_get_main_queue(), ^{ self.lastFile = file; });
-            [self message:resizeError ? @"Redução falhou; original preservado. Adicionando original ao Fotos…" : @"Foto gravada no M7. Adicionando ao Fotos…"];
-            [self saveFileToPhotosIfAuthorized:file captureID:settings.uniqueID];
+            [self savePhotoToPhotos:photo];
         }
     });
 }
 
-// All file/PhotoKit state lives on sessionQueue. Completion for an older photo
-// still writes its own receipt, even when a new capture has already started.
-- (void)recordPhotos:(NSDictionary *)result file:(NSURL *)file captureID:(int64_t)captureID {
+// sessionQueue only. Results remain visible even with no writable filesystem.
+- (void)recordPhotos:(NSDictionary *)result photo:(M7Photo *)photo {
     NSMutableDictionary *receipt = [result mutableCopy];
-    receipt[@"filename"] = file.lastPathComponent;
+    receipt[@"filename"] = photo.filename;
     receipt[@"time"] = @(NSDate.date.timeIntervalSince1970);
+    receipt[@"localBackup"] = @(photo.file != nil);
+    self.photoResults[photo.filename] = receipt;
+    if (self.photoResults.count > 12) {
+        NSString *oldest = [self.photoResults.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+            return [self.photoResults[a][@"time"] compare:self.photoResults[b][@"time"]];
+        }].firstObject;
+        [self.photoResults removeObjectForKey:oldest];
+    }
     NSError *error = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:receipt options:NSJSONWritingPrettyPrinted error:&error];
-    if (data) [data writeToURL:[file URLByAppendingPathExtension:@"photos.json"] options:NSDataWritingAtomic error:&error];
-    if (captureID == self.captureID || captureID == -1)
-        [self recordCaptureStage:@"photos" details:receipt];
+    if (photo.file) {
+        NSData *data = [NSJSONSerialization dataWithJSONObject:receipt options:NSJSONWritingPrettyPrinted error:&error];
+        if (data) [data writeToURL:[photo.file URLByAppendingPathExtension:@"photos.json"] options:NSDataWritingAtomic error:&error];
+    }
+    if (photo.captureID == self.captureID || photo.captureID == -1) [self recordCaptureStage:@"photos" details:receipt];
     if (error) [self recordCaptureStage:@"photosReceiptError" details:@{@"message":error.localizedDescription}];
 }
 
-- (void)photosFailed:(NSString *)message file:(NSURL *)file captureID:(int64_t)captureID error:(NSError *)error {
-    [self.photosInFlight removeObject:file];
-    [self recordPhotos:@{@"state":@"failed", @"message":message, @"domain":error.domain ?: @"",
-        @"code":@(error.code), @"error":error.description ?: @""} file:file captureID:captureID];
-    if (captureID == self.captureID || captureID == -1) [self message:message];
+- (void)photosFailed:(NSString *)reason photo:(M7Photo *)photo error:(NSError *)error {
+    [self.photosInFlight removeObject:photo.filename];
+    [self recordPhotos:@{@"state":@"failed", @"message":reason, @"domain":error.domain ?: @"",
+        @"code":@(error.code), @"error":error.description ?: @""} photo:photo];
+    if (photo.file) {
+        photo.data = nil; // The existing file is the retry source.
+        if (self.pendingPhoto == photo) self.pendingPhoto = nil;
+    }
+    if (photo.captureID == self.captureID || photo.captureID == -1) {
+        NSString *location = photo.file ? @"Foto só no M7. Use Exportar." : @"Foto só na memória. Toque em SALVAR FOTO PENDENTE; não encerre a Câmera.";
+        [self message:[NSString stringWithFormat:@"%@ %@", location, reason]];
+    }
 }
 
 - (void)saveFileToPhotosIfAuthorized:(NSURL *)file captureID:(int64_t)captureID {
-    if ([self.photosInFlight containsObject:file]) { [self message:@"Esta foto já está sendo adicionada ao Fotos…"]; return; }
-    NSDictionary *receipt = nil;
-    // Receipts use JSON; a successful receipt prevents duplicate retry imports.
-    NSData *data = [NSData dataWithContentsOfURL:[file URLByAppendingPathExtension:@"photos.json"]];
-    if (data) receipt = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (([receipt isKindOfClass:NSDictionary.class] && [receipt[@"state"] isEqual:@"saved"]) || [self.photosImported containsObject:file]) {
-        [self message:@"O Fotos já confirmou a inclusão desta foto. Use Exportar para compartilhar o original."]; return;
-    }
-    [self.photosInFlight addObject:file];
-    [self attemptPhotosImport:file captureID:captureID mayRequest:YES];
+    M7Photo *photo = [M7Photo new];
+    photo.file = file; photo.filename = file.lastPathComponent; photo.captureID = captureID;
+    [self savePhotoToPhotos:photo];
 }
 
-- (void)attemptPhotosImport:(NSURL *)file captureID:(int64_t)captureID mayRequest:(BOOL)mayRequest {
+- (void)savePhotoToPhotos:(M7Photo *)photo {
+    if ([self.photosInFlight containsObject:photo.filename]) { [self message:@"Aguardando confirmação do Fotos…"]; return; }
+    NSDictionary *receipt = self.photoResults[photo.filename];
+    NSData *data = photo.file ? [NSData dataWithContentsOfURL:[photo.file URLByAppendingPathExtension:@"photos.json"]] : nil;
+    if (data) receipt = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (([receipt isKindOfClass:NSDictionary.class] && [receipt[@"state"] isEqual:@"saved"]) || [self.photosImported containsObject:photo.filename]) {
+        [self message:@"O Fotos já confirmou a inclusão desta foto."]; return;
+    }
+    [self.photosInFlight addObject:photo.filename];
+    [self attemptPhotosImport:photo mayRequest:YES];
+}
+
+- (void)attemptPhotosImport:(M7Photo *)photo mayRequest:(BOOL)mayRequest {
     @try {
-        if (![NSFileManager.defaultManager fileExistsAtPath:file.path]) {
-            [self photosFailed:@"Arquivo local indisponível. Abra Exportar → Ver diagnóstico." file:file captureID:captureID error:nil]; return;
+        if (!photo.data.length && (!photo.file || ![NSFileManager.defaultManager fileExistsAtPath:photo.file.path])) {
+            [self photosFailed:@"Dados da foto indisponíveis. Abra Ver diagnóstico." photo:photo error:nil]; return;
         }
         PHAuthorizationStatus add = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
         PHAuthorizationStatus read = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
         NSString *usage = [NSBundle.mainBundle objectForInfoDictionaryKey:@"NSPhotoLibraryAddUsageDescription"];
         BOOL hasUsage = [usage isKindOfClass:NSString.class] && usage.length > 0;
         [self recordPhotos:@{@"state":@"authorization", @"addOnly":@(add), @"readWrite":@(read),
-            @"hasAddUsageDescription":@(hasUsage)} file:file captureID:captureID];
+            @"hasAddUsageDescription":@(hasUsage)} photo:photo];
         BOOL authorized = add == PHAuthorizationStatusAuthorized || read == PHAuthorizationStatusAuthorized || read == PHAuthorizationStatusLimited;
         if (!authorized) {
             if (add == PHAuthorizationStatusNotDetermined && mayRequest && hasUsage) {
-                [self message:@"Foto gravada no M7. Aguardando permissão para adicionar ao Fotos…"];
+                [self message:@"Aguardando permissão para adicionar ao Fotos…"];
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(__unused PHAuthorizationStatus status) {
-                        dispatch_async(self.sessionQueue, ^{ [self attemptPhotosImport:file captureID:captureID mayRequest:NO]; });
+                        dispatch_async(self.sessionQueue, ^{ [self attemptPhotosImport:photo mayRequest:NO]; });
                     }];
                 });
                 return;
@@ -791,47 +828,51 @@
             NSString *reason = add == PHAuthorizationStatusDenied ? @"Acesso ao Fotos negado." :
                 add == PHAuthorizationStatusRestricted ? @"Acesso ao Fotos restrito pelo sistema." :
                 @"O processo Câmera não forneceu autorização para adicionar ao Fotos.";
-            [self photosFailed:[NSString stringWithFormat:@"Foto só no M7. %@ Use Exportar → foto → Compartilhar.", reason]
-                file:file captureID:captureID error:nil];
+            [self photosFailed:reason photo:photo error:nil];
             return;
         }
-        [self recordPhotos:@{@"state":@"importing"} file:file captureID:captureID];
-        if (captureID == self.captureID || captureID == -1) [self message:@"Foto gravada no M7. Adicionando ao Fotos…"];
+        [self recordPhotos:@{@"state":@"importing", @"source":photo.data.length ? @"data" : @"file"} photo:photo];
+        if (photo.captureID == self.captureID || photo.captureID == -1) [self message:@"Adicionando ao Fotos… Aguarde a confirmação."];
+        // Capture strong references before handing off to PhotoKit's queue.
+        NSData *payload = photo.data;
+        NSURL *sourceFile = photo.file;
         __block NSString *assetID = nil;
         __block NSError *changeError = nil;
         [PHPhotoLibrary.sharedPhotoLibrary performChanges:^{
             @try {
                 PHAssetCreationRequest *asset = [PHAssetCreationRequest creationRequestForAsset];
                 PHAssetResourceCreationOptions *options = [PHAssetResourceCreationOptions new];
-                options.originalFilename = file.lastPathComponent;
-                options.uniformTypeIdentifier = [file.pathExtension.lowercaseString isEqual:@"dng"] ? @"com.adobe.raw-image" : @"public.jpeg";
-                [asset addResourceWithType:PHAssetResourceTypePhoto fileURL:file options:options];
+                options.originalFilename = photo.filename;
+                options.uniformTypeIdentifier = [photo.filename.pathExtension.lowercaseString isEqual:@"dng"] ? @"com.adobe.raw-image" : @"public.jpeg";
+                if (payload.length) [asset addResourceWithType:PHAssetResourceTypePhoto data:payload options:options];
+                else [asset addResourceWithType:PHAssetResourceTypePhoto fileURL:sourceFile options:options];
                 assetID = asset.placeholderForCreatedAsset.localIdentifier;
             } @catch (NSException *exception) { changeError = [self captureExceptionError:exception]; }
         } completionHandler:^(BOOL success, NSError *saveError) {
             dispatch_async(self.sessionQueue, ^{
-                [self.photosInFlight removeObject:file];
+                [self.photosInFlight removeObject:photo.filename];
                 if (!success || changeError || !assetID.length) {
                     NSError *failure = saveError ?: changeError;
-                    [self photosFailed:[NSString stringWithFormat:@"Foto só no M7. Fotos: %@. Abra Exportar.", failure.localizedDescription ?: @"não confirmou a inclusão"]
-                        file:file captureID:captureID error:failure];
+                    [self photosFailed:[NSString stringWithFormat:@"Fotos: %@", failure.localizedDescription ?: @"não confirmou a inclusão"] photo:photo error:failure];
                     return;
                 }
-                [self.photosImported addObject:file];
-                [self recordPhotos:@{@"state":@"saved", @"assetID":assetID} file:file captureID:captureID];
-                if (captureID == self.captureID || captureID == -1) [self message:@"Salvo no Fotos. Original também disponível em Exportar."];
+                [self.photosImported addObject:photo.filename];
+                [self recordPhotos:@{@"state":@"saved", @"assetID":assetID} photo:photo];
+                photo.data = nil;
+                if (self.pendingPhoto == photo) self.pendingPhoto = nil;
+                if (photo.captureID == self.captureID || photo.captureID == -1)
+                    [self message:photo.file ? @"Salvo no Fotos. Cópia também disponível em Exportar." : @"Salvo no Fotos. Sem cópia local no M7."];
             });
         }];
     } @catch (NSException *exception) {
-        [self photosFailed:@"Foto só no M7. Falha ao adicionar ao Fotos; abra Exportar → Ver diagnóstico."
-            file:file captureID:captureID error:[self captureExceptionError:exception]];
+        [self photosFailed:@"Falha ao adicionar ao Fotos; abra Exportar → Ver diagnóstico." photo:photo error:[self captureExceptionError:exception]];
     }
 }
 
 - (NSDictionary *)sessionDiagnostic {
     return @{@"configured":@(self.configured), @"running":@(self.session.isRunning),
         @"captureBusy":@(self.captureBusy), @"pendingExposure":@(self.pendingExposure),
-        @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"captureID":@(self.captureID)};
+        @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID)};
 }
 
 // On-screen JSON does not depend on storage or Filza. Collect it on sessionQueue.
@@ -846,15 +887,15 @@
             id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
             [receipts addObject:@{@"filename":file.lastPathComponent, @"photos":value ?: @{}}];
         }
-        NSDictionary *diagnostic = @{@"version":@"0.1.2", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        NSDictionary *diagnostic = @{@"version":@"0.1.3", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
             @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
             @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
             @"lastCapture":self.captureTrace ?: @{@"message":@"Nenhuma tentativa registrada nesta instalação."},
-            @"photos":receipts, @"lens":self.lensDiagnostic ?: @{}};
+            @"photos":receipts, @"recentPhotosResults":self.photoResults.allValues ?: @[], @"lens":self.lensDiagnostic ?: @{}};
         NSData *json = [NSJSONSerialization dataWithJSONObject:diagnostic options:NSJSONWritingPrettyPrinted error:nil];
         NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
         dispatch_async(dispatch_get_main_queue(), ^{
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Diagnóstico M7 0.1.2" message:text preferredStyle:UIAlertControllerStyleAlert];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Diagnóstico M7 0.1.3" message:text preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 UIPasteboard.generalPasteboard.string = text; [self message:@"Diagnóstico copiado. Cole na conversa para análise."];
             }]];
@@ -881,11 +922,17 @@
     dispatch_async(self.sessionQueue, ^{
         NSError *error = nil;
         NSArray<NSURL *> *files = [self.storage imageFilesWithError:&error];
+        BOOL pending = self.pendingPhoto != nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             NSString *message = error ? [NSString stringWithFormat:@"Falha ao ler uma pasta: %@", error.localizedDescription] :
-                files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." : @"Nenhuma foto local encontrada. Abra Ver diagnóstico e copie o resultado.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.2" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+                files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
+                pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
+                @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.3" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
+            if (pending) [menu addAction:[UIAlertAction actionWithTitle:@"Salvar foto pendente no Fotos" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                dispatch_async(self.sessionQueue, ^{ if (self.pendingPhoto) [self savePhotoToPhotos:self.pendingPhoto]; });
+            }]];
             NSDateFormatter *formatter = [NSDateFormatter new];
             formatter.dateStyle = NSDateFormatterShortStyle; formatter.timeStyle = NSDateFormatterMediumStyle;
             for (NSURL *file in [files subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)12, files.count))]) {
@@ -993,6 +1040,34 @@
     dispatch_async(self.sessionQueue, ^{
         if (self.captureBusy) {
             dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; });
+            return;
+        }
+        if (self.pendingPhoto && !self.pendingPhoto.file && self.pendingPhoto.data.length) {
+            M7Photo *photo = self.pendingPhoto;
+            BOOL importing = [self.photosInFlight containsObject:photo.filename];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.closeButton.enabled = YES;
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Foto ainda não salva"
+                    message:importing ? @"O Fotos ainda não confirmou a inclusão. Aguarde para fechar o M7." :
+                        @"Esta foto está apenas na memória. Fechar agora descarta a imagem."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Continuar no M7" style:UIAlertActionStyleCancel handler:nil]];
+                if (!importing) {
+                    [alert addAction:[UIAlertAction actionWithTitle:@"Tentar salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                        dispatch_async(self.sessionQueue, ^{ if (self.pendingPhoto == photo) [self savePhotoToPhotos:photo]; });
+                    }]];
+                    [alert addAction:[UIAlertAction actionWithTitle:@"Descartar foto e fechar" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+                        dispatch_async(self.sessionQueue, ^{
+                            if (self.pendingPhoto == photo && ![self.photosInFlight containsObject:photo.filename]) {
+                                [self recordPhotos:@{@"state":@"discardedByUser"} photo:photo];
+                                photo.data = nil; self.pendingPhoto = nil;
+                                dispatch_async(dispatch_get_main_queue(), ^{ [self close]; });
+                            }
+                        });
+                    }]];
+                }
+                [self presentExportController:alert];
+            });
             return;
         }
         self.closing = YES;

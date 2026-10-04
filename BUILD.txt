@@ -1,19 +1,19 @@
-Manual7 0.1.2 — registro de build
-Data UTC: 2026-10-04T06:58:40.977857+00:00
+Manual7 0.1.3 — registro de build
+Data UTC: 2026-10-04T07:10:55.972749+00:00
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura: arm64
 Deployment target: iOS 15.0
 Empacotamento: rootless / iphoneos-arm64
-Alvo de teste pretendido: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
+Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Comando: make package FINALPACKAGE=1 (THEOS configurado)
 Build Objective-C: compilado, vinculado e assinado pelo Theos.
-Pacote: metadados e caminhos rootless conferidos com dpkg-deb.
-Teste físico / visual desta versão: não realizado; aparelho não acessível neste ambiente.
-Testes executados: 11 aprovados (8 do núcleo C; 3 de contrato dos callbacks com o SDK iOS 15.6).
-Análise estática: M7CameraController.m e M7Storage.m sem diagnósticos.
-Teste nativo de armazenamento/Foundation: verificado sintaticamente com -Wall -Wextra -Werror; execução não realizada neste Linux.
-Testes nativos ImageIO: execução não realizada neste Linux; módulo inalterado nesta versão.
-Diagnóstico real de ausência de fotos: ainda necessário para identificar a etapa que falha no aparelho.
-SHA-256 do .deb: 1e89c8449f26fb4fa5ea9a7c9ac0c68ea537a82e07c9b50bfe02070247680b23
+Testes existentes executados: 11 aprovados (8 do núcleo C; 3 de contrato dos callbacks com SDK iOS 15.6).
+Análise estática: M7CameraController.m sem diagnósticos.
+Relatório 0.1.2: NSCocoaErrorDomain 513 nos dois destinos locais; sessão ativa; nenhuma submissão ao sensor.
+Correção: gravação local opcional, PhotoKit recebe NSData; uma foto sem cópia fica retida até confirmação ou descarte explícito.
+Validação física: não realizada. Importação PhotoKit, nova tentativa e aviso de fechamento ainda precisam de teste no aparelho.
+Os testes automatizados existentes não executam o fluxo novo de PhotoKit/retenção em memória.
+Testes nativos Foundation/ImageIO: não executados neste Linux; módulos inalterados nesta versão.
+SHA-256 do .deb: 680f071b1d5eeb6b704e8b9e456e52b4fafbb8171b14840d6ad22f64ebd8545a

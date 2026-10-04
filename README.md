@@ -1,8 +1,16 @@
-# Manual7 — 0.1.3 experimental
+# Manual7 — 0.1.4 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** compilado para arm64/rootless com Theos e SDK iOS 15.6, deployment target iOS 15.0. Onze testes existentes passaram; a análise estática do controlador não reportou problemas. A 0.1.3 remove o bloqueio de captura causado por pastas sem permissão de gravação. **O fluxo de salvamento e de nova tentativa no Fotos ainda precisa ser validado no aparelho.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW ainda falha no processamento com erro AVFoundation −11800 e zero bytes; o erro interno não constava no diagnóstico anterior. A 0.1.4 melhora o diagnóstico e oferece uma comparação de sessão. **Não é uma correção confirmada de RAW.** Compilação arm64/rootless, 11 testes existentes e análise estática concluídos; esta versão ainda não foi executada no aparelho pelo desenvolvedor.
+
+## Diagnóstico RAW na 0.1.4
+
+Os erros agora incluem `userInfo`, `failureReason` e a cadeia `NSUnderlyingError`. O callback de processamento e o callback final são registrados separadamente, para que um erro genérico de conclusão não esconda o erro anterior. A serialização limita profundidade, itens e tamanho de texto; dados binários são representados somente pela quantidade de bytes.
+
+**Exportar → Testar RAW sem saída de peaking** remove o `AVCaptureVideoDataOutput` da sessão, reinicia a câmera e volta a exposição/foco para AUTO/AF. O visor continua usando `AVCaptureVideoPreviewLayer`. A ação não dispara uma foto automaticamente; ative DNG RAW e toque em FOTOGRAFAR. Exporte o diagnóstico após a tentativa. **Restaurar saída de peaking** restabelece a configuração anterior; fechar e reabrir M7 também volta à configuração padrão. Não é possível reconfigurar durante uma captura ou com foto pendente.
+
+Esse teste é diferente de desligar o interruptor Peaking: o interruptor apenas desativa a análise das bordas, mantendo a saída de vídeo conectada. A comparação ajuda a investigar uma possível interação com RAW, mas os relatórios recebidos não comprovam essa hipótese. `sessionNow.outputs` e a sessão registrada no disparo mostram quais saídas estavam conectadas.
 
 ## Correção de armazenamento na 0.1.3
 
@@ -63,17 +71,17 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.1.3](https://github.com/Raidzap/Manual7/releases/tag/v0.1.3).
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.1.4](https://github.com/Raidzap/Manual7/releases/tag/v0.1.4).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
-2. Transfira `dev.manual7.camera_0.1.3_iphoneos-arm64.deb` para o iPhone.
+2. Transfira `dev.manual7.camera_0.1.4_iphoneos-arm64.deb` para o iPhone.
 3. Abra o pacote em um instalador de `.deb`, como o do Filza, se já estiver instalado. Alternativamente, em um terminal no iPhone, use o comando abaixo com o caminho real do arquivo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
-sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.1.3_iphoneos-arm64.deb
+sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.1.4_iphoneos-arm64.deb
 ```
 
 O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. A dependência `mobilesubstrate` é a interface de compatibilidade de hooking; use a implementação já fornecida pelo jailbreak.
@@ -140,6 +148,8 @@ bash tests/run_jpeg_native.sh
 Eles verificam bytes idênticos em Original, ausência de ampliação, três tamanhos menores, orientações 1/6/8, dimensões EXIF, ISO, tempo de exposição e rejeição de entrada inválida. **Esses testes nativos não foram executados neste ambiente Linux**; o código foi verificado sintaticamente com o SDK iOS. A captura e a leitura dos arquivos gerados no iPhone continuam sendo parte necessária da validação.
 
 O teste `bash tests/run_storage_native.sh` exercita gravação real com Foundation no macOS: pasta principal, alternativa, busca de imagens nas duas pastas e erro quando nenhuma pode ser usada. O código foi compilado sintaticamente com o SDK iOS, mas **sua execução não foi realizada no Linux**. Ele não simula as permissões de sandbox/TCC da Câmera no iPhone.
+
+O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para verificar erro interno, JSON e limite de recursão. Foi verificado sintaticamente com o SDK iOS, mas não executado no Linux.
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 

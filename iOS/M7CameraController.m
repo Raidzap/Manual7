@@ -2,6 +2,7 @@
 #import "M7DeviceControls.h"
 #import "M7JPEG.h"
 #import "M7Storage.h"
+#import "M7ErrorDetails.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
@@ -313,7 +314,7 @@
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.1.3";
+    self.captureTrace[@"version"] = @"0.1.4";
     self.captureTrace[@"updatedAt"] = @(NSDate.date.timeIntervalSince1970);
     self.captureTrace[@"storage"] = self.storage.attempts ?: @[];
     NSError *error = nil;
@@ -325,9 +326,8 @@
 
 - (void)finishCaptureWithError:(NSError *)error {
     self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil;
-    [self recordCaptureStage:@"error" details:@{@"domain":error.domain ?: @"Manual7",
-        @"code":@(error.code), @"message":error.localizedDescription ?: @"Falha de captura"}];
-    [self message:[NSString stringWithFormat:@"%@ · Detalhes em Exportar → Ver diagnóstico.", error.localizedDescription ?: @"Falha de captura"]];
+    [self recordCaptureStage:@"error" details:M7ErrorDetails(error)];
+    [self message:[NSString stringWithFormat:@"%@ (%ld) · Detalhes em Exportar → Ver diagnóstico.", error.localizedDescription ?: @"Falha de captura", (long)error.code]];
     dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; self.shareButton.enabled = YES; });
 }
 
@@ -415,7 +415,7 @@
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.1.3";
+    diagnostic[@"version"] = @"0.1.4";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -610,7 +610,8 @@
         self.captureID = 0;
         self.captureTrace = [NSMutableDictionary new];
         [self recordCaptureStage:@"requested" details:@{@"raw":@(raw), @"jpegLongEdge":@(longEdge),
-            @"device":self.input.device.deviceType ?: @"", @"highResolutionEnabled":@(self.photoOutput.isHighResolutionCaptureEnabled)}];
+            @"device":self.input.device.deviceType ?: @"", @"highResolutionEnabled":@(self.photoOutput.isHighResolutionCaptureEnabled),
+            @"session":[self sessionDiagnostic]}];
         NSError *error = nil;
         // A denied local backup must never prevent AVFoundation/PhotoKit.
         if (![self.storage prepare:&error]) [self recordCaptureStage:@"localBackupUnavailable"
@@ -678,7 +679,7 @@
     dispatch_async(self.sessionQueue, ^{
         if (photo.resolvedSettings.uniqueID != self.captureID) return;
         @autoreleasepool {
-            [self recordCaptureStage:@"processing" details:@{@"raw":@(photo.isRawPhoto)}];
+            [self recordCaptureStage:@"processing" details:@{@"raw":@(photo.isRawPhoto), @"errorDetails":M7ErrorDetails(error)}];
             @try {
                 self.captureError = error;
                 self.captureData = error ? nil : photo.fileDataRepresentation;
@@ -687,7 +688,7 @@
                     self.captureError = [NSError errorWithDomain:@"Manual7.Capture" code:2
                         userInfo:@{NSLocalizedDescriptionKey:@"O sensor não retornou um arquivo de imagem."}];
                 [self recordCaptureStage:@"representation" details:@{@"bytes":@(self.captureData.length),
-                    @"error":self.captureError.localizedDescription ?: @""}];
+                    @"error":self.captureError.localizedDescription ?: @"", @"errorDetails":M7ErrorDetails(self.captureError)}];
             } @catch (NSException *exception) {
                 self.captureError = [self captureExceptionError:exception];
             }
@@ -699,6 +700,8 @@
     dispatch_async(self.sessionQueue, ^{
         if (settings.uniqueID != self.captureID) return;
         @autoreleasepool {
+            [self recordCaptureStage:@"captureFinished" details:@{@"errorDetails":M7ErrorDetails(error),
+                @"processingError":M7ErrorDetails(self.captureError), @"bytes":@(self.captureData.length)}];
             NSError *failure = error ?: self.captureError;
             if (failure || !self.captureData.length) {
                 [self finishCaptureWithError:failure ?: [NSError errorWithDomain:@"Manual7.Capture" code:3
@@ -870,9 +873,19 @@
 }
 
 - (NSDictionary *)sessionDiagnostic {
+    AVCaptureDevice *device = self.input.device;
+    NSMutableArray *outputs = [NSMutableArray new];
+    for (AVCaptureOutput *output in self.session.outputs) [outputs addObject:NSStringFromClass(output.class)];
+    CMVideoDimensions formatSize = {0, 0};
+    if (device.activeFormat.formatDescription) formatSize = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription);
     return @{@"configured":@(self.configured), @"running":@(self.session.isRunning),
         @"captureBusy":@(self.captureBusy), @"pendingExposure":@(self.pendingExposure),
-        @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID)};
+        @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID),
+        @"outputs":outputs, @"preset":self.session.sessionPreset ?: @"", @"interrupted":@(self.session.isInterrupted),
+        @"formatWidth":@(formatSize.width), @"formatHeight":@(formatSize.height),
+        @"ISO":@(device.ISO), @"exposureMode":@(device.exposureMode), @"focusMode":@(device.focusMode),
+        @"adjustingExposure":@(device.isAdjustingExposure), @"adjustingFocus":@(device.isAdjustingFocus),
+        @"pressure":device.systemPressureState.level ?: @"", @"zoom":@(device.videoZoomFactor)};
 }
 
 // On-screen JSON does not depend on storage or Filza. Collect it on sessionQueue.
@@ -887,7 +900,7 @@
             id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
             [receipts addObject:@{@"filename":file.lastPathComponent, @"photos":value ?: @{}}];
         }
-        NSDictionary *diagnostic = @{@"version":@"0.1.3", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        NSDictionary *diagnostic = @{@"version":@"0.1.4", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
             @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
             @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
             @"lastCapture":self.captureTrace ?: @{@"message":@"Nenhuma tentativa registrada nesta instalação."},
@@ -895,7 +908,7 @@
         NSData *json = [NSJSONSerialization dataWithJSONObject:diagnostic options:NSJSONWritingPrettyPrinted error:nil];
         NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
         dispatch_async(dispatch_get_main_queue(), ^{
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Diagnóstico M7 0.1.3" message:text preferredStyle:UIAlertControllerStyleAlert];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Diagnóstico M7 0.1.4" message:text preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 UIPasteboard.generalPasteboard.string = text; [self message:@"Diagnóstico copiado. Cole na conversa para análise."];
             }]];
@@ -923,13 +936,18 @@
         NSError *error = nil;
         NSArray<NSURL *> *files = [self.storage imageFilesWithError:&error];
         BOOL pending = self.pendingPhoto != nil;
+        BOOL hasVideoOutput = [self.session.outputs containsObject:self.videoOutput];
         dispatch_async(dispatch_get_main_queue(), ^{
             NSString *message = error ? [NSString stringWithFormat:@"Falha ao ler uma pasta: %@", error.localizedDescription] :
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.3" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.4" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
+            [menu addAction:[UIAlertAction actionWithTitle:hasVideoOutput ? @"Testar RAW sem saída de peaking" : @"Restaurar saída de peaking"
+                style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                    [self setPeakingOutputAttached:!hasVideoOutput];
+                }]];
             if (pending) [menu addAction:[UIAlertAction actionWithTitle:@"Salvar foto pendente no Fotos" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 dispatch_async(self.sessionQueue, ^{ if (self.pendingPhoto) [self savePhotoToPhotos:self.pendingPhoto]; });
             }]];
@@ -943,6 +961,43 @@
             [menu addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
             [self presentExportController:menu];
         });
+    });
+}
+
+- (void)setPeakingOutputAttached:(BOOL)attached {
+    // Controlled comparison for RAW failures. Rebuild only while idle and
+    // restore AUTO/AF so format-dependent manual limits cannot become stale.
+    dispatch_async(self.sessionQueue, ^{
+        if (!self.configured || !self.input || !self.videoOutput) {
+            [self message:@"A câmera precisa estar configurada para este teste. Feche e reabra M7."]; return;
+        }
+        if (self.captureBusy || self.pendingPhoto || self.closing) {
+            [self message:@"Conclua a captura ou salve a foto pendente antes deste teste."]; return;
+        }
+        if ([self.session.outputs containsObject:self.videoOutput] == attached) return;
+        self.configured = NO;
+        self.peakingEnabled = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{ [self enableControls:NO]; self.peakingView.image = nil; });
+        [self.session stopRunning];
+        [self.session beginConfiguration];
+        if (attached && [self.session canAddOutput:self.videoOutput]) [self.session addOutput:self.videoOutput];
+        else if (!attached) [self.session removeOutput:self.videoOutput];
+        [self.session commitConfiguration];
+        NSError *error = nil;
+        AVCaptureDeviceType type = self.input.device.deviceType ?: AVCaptureDeviceTypeBuiltInWideAngleCamera;
+        BOOL ok = [self selectDevice:type error:&error];
+        self.configured = ok;
+        if (ok) [self.session startRunning];
+        BOOL hasVideo = [self.session.outputs containsObject:self.videoOutput];
+        [self recordCaptureStage:@"comparisonSession" details:@{@"requestedPeakingOutput":@(attached),
+            @"attachedPeakingOutput":@(hasVideo), @"errorDetails":M7ErrorDetails(error), @"session":[self sessionDiagnostic]}];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.peakingSwitch.on = NO; self.peakingSwitch.enabled = hasVideo;
+        });
+        [self message:!ok ? error.localizedDescription ?: @"Falha ao configurar o teste; feche e reabra M7." :
+            attached && !hasVideo ? @"A sessão recusou a saída de peaking. Consulte o diagnóstico." :
+            hasVideo ? @"Saída de peaking restaurada. Exposição AUTO e foco AF." :
+                @"Teste sem saída de peaking. Exposição AUTO e foco AF; fotografe em RAW."];
     });
 }
 
@@ -1023,7 +1078,7 @@
         NSError *error = note.userInfo[AVCaptureSessionErrorKey];
         [self message:[NSString stringWithFormat:@"Câmera: %@. Feche e reabra M7.", error.localizedDescription ?: @"erro de sessão"]];
         dispatch_async(self.sessionQueue, ^{
-            [self recordCaptureStage:@"sessionError" details:@{@"message":error.localizedDescription ?: @"", @"code":@(error.code)}];
+            [self recordCaptureStage:@"sessionError" details:M7ErrorDetails(error)];
             self.configured = NO; self.captureBusy = NO;
             self.pendingExposure = NO; self.pendingFocus = NO;
             ++self.exposureRevision; ++self.focusRevision;

@@ -1,5 +1,5 @@
-Manual7 0.1.1 — registro de build
-Data UTC: 2026-10-04T06:40:08.599724+00:00
+Manual7 0.1.2 — registro de build
+Data UTC: 2026-10-04T06:58:40.977857+00:00
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
@@ -9,10 +9,11 @@ Empacotamento: rootless / iphoneos-arm64
 Alvo de teste pretendido: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Comando: make package FINALPACKAGE=1 (THEOS configurado)
 Build Objective-C: compilado, vinculado e assinado pelo Theos.
-Teste físico / visual: não realizado; nenhum iPhone conectado.
+Pacote: metadados e caminhos rootless conferidos com dpkg-deb.
+Teste físico / visual desta versão: não realizado; aparelho não acessível neste ambiente.
 Testes executados: 11 aprovados (8 do núcleo C; 3 de contrato dos callbacks com o SDK iOS 15.6).
-Regressões: o compilador rejeita os dois callbacks com grafia incorreta.
-Análise estática: M7CameraController.m e M7JPEG.m sem diagnósticos.
-Testes nativos ImageIO: código verificado sintaticamente; execução não realizada neste Linux.
-Crash 0.1.0: UUID do binário confere com o relatório fornecido; offset 60604 simbolicado no bloco de capture.
-SHA-256 do .deb: 8b1c31d35b6494fc54289ba7c2ee2cd2812a9395d8d08f0ba5ad2df88b899275
+Análise estática: M7CameraController.m e M7Storage.m sem diagnósticos.
+Teste nativo de armazenamento/Foundation: verificado sintaticamente com -Wall -Wextra -Werror; execução não realizada neste Linux.
+Testes nativos ImageIO: execução não realizada neste Linux; módulo inalterado nesta versão.
+Diagnóstico real de ausência de fotos: ainda necessário para identificar a etapa que falha no aparelho.
+SHA-256 do .deb: 1e89c8449f26fb4fa5ea9a7c9ac0c68ea537a82e07c9b50bfe02070247680b23

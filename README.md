@@ -1,8 +1,20 @@
-# Manual7 — 0.1.1 experimental
+# Manual7 — 0.1.2 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** código compilado, vinculado e assinado para arm64 com Theos e SDK iOS 15.6, deployment target iOS 15.0. Os oito testes do núcleo C e três testes do contrato de callbacks passaram. A análise estática do controlador e do módulo JPEG não reportou problemas. **A execução no iPhone, a injeção pelo Dopamine, o salvamento no Fotos e a qualidade/alinhamento do peaking ainda não foram validados.** Esta versão corrige um defeito de callbacks encontrado após o fechamento reportado na versão anterior; a correção ainda precisa ser confirmada no iPhone.
+**Estado:** compilado para arm64/rootless com Theos e SDK iOS 15.6, deployment target iOS 15.0. Onze testes automatizados passaram. A análise estática do controlador e do armazenamento não reportou problemas. **A inclusão das fotos na galeria ainda precisa ser confirmada no aparelho.** A 0.1.2 corrige caminhos silenciosos de armazenamento/autorização e permite obter o diagnóstico diretamente no M7.
+
+## Salvamento e diagnóstico na 0.1.2
+
+Quando uma captura falhava ao gravar na pasta de saída, o diagnóstico em arquivo podia falhar pelo mesmo motivo. Além disso, a mensagem ficava dentro da área rolável dos controles. Agora o status fica fixo acima do disparador e **Exportar → Ver diagnóstico → Copiar diagnóstico** funciona mesmo sem uma pasta gravável. Não é necessário localizar arquivos pelo Filza. O menu mostra a versão instalada.
+
+Antes de disparar, M7 verifica a criação e gravação atômica em `Documents/Manual7`. Se essa localização não aceitar gravação, tenta `Library/Application Support/Manual7`, conforme os caminhos retornados pelo sistema ao processo Câmera. Ambas são pesquisadas ao exportar. Se nenhuma funcionar, o disparo é recusado com erro visível, preservando o diagnóstico em memória. Não há uso de pasta temporária para guardar as fotos.
+
+A importação no Fotos deixa de encerrar silenciosamente quando falta autorização. O tweak consulta acesso de adição e de leitura/escrita; quando permitido pelo Info.plist existente e pelo estado da autorização, solicita acesso de adição. Não modifica o aplicativo Câmera nem sua declaração de permissões. Se o processo não puder solicitar acesso, ou se o sistema negar a importação, a imagem permanece no M7 e a interface informa isso. A mensagem **Salvo no Fotos** depende da confirmação do PhotoKit.
+
+Cada arquivo recebe um resultado de importação em `.photos.json`. **Exportar → foto → Adicionar ao Fotos** permite tentar novamente uma importação que falhou; uma confirmação anterior impede importar novamente o mesmo arquivo. Resultados de fotos anteriores são preservados mesmo após outro disparo. Essa confirmação registra a inclusão original; não acompanha exclusões posteriores feitas no Fotos. Se uma redução JPEG falhar, a tentativa de inclusão usa o original preservado.
+
+O relato de ausência de fotos também em Exportar ainda não identifica a etapa que falhou no aparelho. A mudança de pasta e o tratamento de autorização corrigem defeitos distintos; o diagnóstico real continua necessário para confirmar a causa e o resultado.
 
 ## Correção de captura na 0.1.1
 
@@ -51,34 +63,36 @@ O original é gravado antes da redução. Se o redimensionamento ou a substitui�
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.1.1](https://github.com/Raidzap/Manual7/releases/tag/v0.1.1).
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.1.2](https://github.com/Raidzap/Manual7/releases/tag/v0.1.2).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
-2. Transfira `dev.manual7.camera_0.1.1_iphoneos-arm64.deb` para o iPhone.
+2. Transfira `dev.manual7.camera_0.1.2_iphoneos-arm64.deb` para o iPhone.
 3. Abra o pacote em um instalador de `.deb`, como o do Filza, se já estiver instalado. Alternativamente, em um terminal no iPhone, use o comando abaixo com o caminho real do arquivo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
-sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.1.1_iphoneos-arm64.deb
+sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.1.2_iphoneos-arm64.deb
 ```
 
 O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. A dependência `mobilesubstrate` é a interface de compatibilidade de hooking; use a implementação já fornecida pelo jailbreak.
 
 ## Usar e exportar
 
-O visor permanece fixo acima dos controles. Deslize a área dos controles para acessar todos eles; o disparador fica na parte inferior.
+O visor permanece fixo acima dos controles. Deslize a área dos controles para acessar todos eles; o status e o disparador ficam fixos na parte inferior.
 
 - Selecione **M** para ajustar ISO e shutter. A entrada nesse modo parte da exposição medida, arredondando o tempo à grade de 1/3 stop.
 - Selecione **MF** e ative **Peaking** para ajustar o foco. Um limiar menor destaca mais bordas.
 - Use **AUTO** para compensação EV. **AE-L** mantém a exposição; **AF-L** mantém o foco atual. As travas são imediatas: aguarde o foco/exposição estabilizarem antes de travar.
 - Para JPEG, desligue **DNG RAW** e escolha **Tamanho**. Para RAW, ative **DNG RAW**. Toque em **FOTOGRAFAR**. O disparador aguarda os callbacks de aplicação dos ajustes manuais pendentes.
-- **Exportar** lista as 12 fotos mais recentes e o diagnóstico da lente. A folha de compartilhamento permite salvar no app Arquivos. Os arquivos anteriores continuam preservados na pasta de saída; a interface desta versão lista somente os 12 recentes.
+- **Exportar** lista as 12 fotos mais recentes e **Ver diagnóstico**. Ao selecionar uma foto, escolha **Adicionar ao Fotos** ou **Compartilhar**. A folha de compartilhamento permite salvar no app Arquivos e oferece as ações disponíveis no sistema para o formato selecionado. Fotos anteriores continuam preservadas; a interface lista somente as 12 recentes.
 
-Cada captura é gravada primeiro em `Documents/Manual7` dentro do contêiner da Câmera, com nome único. Quando o processo já possui autorização compatível, o tweak também solicita a inclusão no Fotos. Caso contrário, use Exportar; o tweak não altera o Info.plist da Câmera para solicitar permissões. Uma falha no Fotos não apaga o arquivo local. Exportar não remove os originais; o espaço ocupado cresce com as capturas.
+Cada captura é gravada primeiro em uma pasta persistente do M7, com nome único. Uma falha no Fotos não apaga o arquivo local. Exportar não remove originais; o espaço ocupado cresce com as capturas. O caminho efetivamente usado aparece em `outputDirectory` no diagnóstico.
 
-`diagnostico.json` contém os limites e formatos RAW da última lente selecionada, além da versão do iOS. **Exportar → Última captura (diagnóstico)** compartilha `ultima-captura.json`, com as etapas do disparo, dimensões e erros. O arquivo sobrevive ao fechamento do aplicativo e é atualizado pela próxima tentativa; exporte-o antes de fotografar novamente se quiser preservar uma falha. Quando serializáveis, os metadados de cada foto ficam em um JSON ao lado do arquivo no contêiner; o próprio DNG/JPEG também contém seus metadados.
+**Exportar → Ver diagnóstico → Copiar diagnóstico** reúne estado atual da sessão, pastas verificadas, quantidade de fotos locais, etapas da última captura, resultados do Fotos e capacidades da lente. Cole o texto na conversa para análise. Se não houver nenhuma foto local, essa tela continua disponível. O diagnóstico em memória funciona durante a sessão mesmo quando a gravação falha; copie antes de fechar o aplicativo nesse caso.
+
+Quando o armazenamento funciona, `ultima-captura.json` preserva as etapas após o fechamento, até uma nova tentativa; `diagnostico.json` registra os limites da lente. Quando serializáveis, os metadados de cada foto ficam em um JSON ao lado da imagem; o próprio DNG/JPEG também contém seus metadados.
 
 ## Teste de aceitação no aparelho
 
@@ -86,7 +100,7 @@ Cada captura é gravada primeiro em `Documents/Manual7` dentro do contêiner da 
 2. Em M, ajuste um ISO baixo e quatro posições consecutivas de shutter. Fotografe a mesma cena e confira ISO/ExposureTime no DNG em um leitor de metadados. A razão esperada dos tempos vizinhos é aproximadamente `2^(1/3)`; a razão entre o primeiro e o quarto é aproximadamente 2.
 3. Arraste MF entre perto e longe diante de um objeto texturizado. Verifique foco óptico e alinhamento do verde com as bordas. O verde deve desaparecer ao desligar Peaking e não deve estar gravado na fotografia.
 4. Em AUTO, compare EV −1, 0 e +1. Depois trave AE-L, mude a iluminação e confira a estabilidade de ISO/tempo. Repita AF-L aproximando e afastando um objeto.
-5. Capture DNG, JPEG Original e cada tamanho JPEG, exporte e confirme dimensões, orientação, ISO/ExposureTime e reconhecimento do DNG como RAW. Compare as fotos em retrato; reabra M7 e confira que os arquivos ainda podem ser exportados.
+5. Comece com AUTO, AF, lente 1×, RAW desligado e JPEG Original: use FOTOGRAFAR dentro do M7, confira a mensagem, a lista Exportar e o Fotos. Se falhar, copie Ver diagnóstico antes de tentar outra foto. Depois capture DNG, JPEG Original e cada tamanho JPEG, exporte e confirme dimensões, orientação, ISO/ExposureTime e reconhecimento do DNG como RAW. Compare as fotos em retrato; reabra M7 e confira que os arquivos ainda podem ser exportados.
 6. Teste a teleobjetiva separadamente e exporte seu diagnóstico. Não use o resultado da grande-angular para presumir os mesmos limites.
 7. Feche M7 e teste foto/vídeo na Câmera normal. Repita abrir/fechar, alternar lentes e bloquear/desbloquear o aparelho. Confirme que não há sessão presa, tela preta ou travas persistentes.
 8. Teste retorno de segundo plano e captura repetida por alguns minutos, observando latência, aquecimento e uso de armazenamento.
@@ -101,7 +115,7 @@ Depois feche e reabra a Câmera. A remoção do pacote não apaga as capturas ex
 
 ## Arquitetura e limites desta versão
 
-`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em fila serial. `M7DeviceControls` aplica os controles sob `lockForConfiguration`. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para a redução exclusiva de JPEG, preservando o tamanho original quando solicitado.
+`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em fila serial. `M7DeviceControls` aplica os controles sob `lockForConfiguration`. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para a redução exclusiva de JPEG, preservando o tamanho original quando solicitado. `M7Storage` verifica as pastas persistentes e reúne suas imagens para exportação.
 
 O modo M7 tem interface em retrato, captura apenas pelas lentes traseiras e usa flash desligado. Não inclui vídeo, Live Photos, HDR computacional, modo Retrato, câmera frontal, ProRAW ou controle do disparador nativo enquanto M7 está aberto. O botão M7 exige disponibilidade dos dados protegidos do aparelho; a operação pela tela bloqueada não é suportada neste protótipo. A arbitragem com a Câmera nativa ainda depende de validação real no iOS 15.8.3.
 
@@ -124,6 +138,8 @@ bash tests/run_jpeg_native.sh
 
 Eles verificam bytes idênticos em Original, ausência de ampliação, três tamanhos menores, orientações 1/6/8, dimensões EXIF, ISO, tempo de exposição e rejeição de entrada inválida. **Esses testes nativos não foram executados neste ambiente Linux**; o código foi verificado sintaticamente com o SDK iOS. A captura e a leitura dos arquivos gerados no iPhone continuam sendo parte necessária da validação.
 
+O teste `bash tests/run_storage_native.sh` exercita gravação real com Foundation no macOS: pasta principal, alternativa, busca de imagens nas duas pastas e erro quando nenhuma pode ser usada. O código foi compilado sintaticamente com o SDK iOS, mas **sua execução não foi realizada no Linux**. Ele não simula as permissões de sandbox/TCC da Câmera no iPhone.
+
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 
 ## Visualizador de crashes
@@ -140,3 +156,6 @@ Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferra
 - [Dopamine — repositório oficial](https://github.com/opa334/Dopamine): jailbreak rootless.
 
 - [Apple — protocolo de callbacks](https://developer.apple.com/documentation/avfoundation/avcapturephotocapturedelegate?language=objc): nomes Objective-C e callbacks obrigatórios conforme o tipo de captura.
+
+- [Apple — autorização no PhotoKit](https://developer.apple.com/documentation/photos/phphotolibrary/requestauthorization(for:handler:)): solicitação de acesso ao Fotos.
+- [Apple — descrição de acesso de adição](https://developer.apple.com/documentation/bundleresources/information-property-list/nsphotolibraryaddusagedescription): declaração exigida para solicitar esse acesso.

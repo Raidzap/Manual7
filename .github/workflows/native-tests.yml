@@ -1,0 +1,24 @@
+name: Native tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  foundation-imageio:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Capture result selection
+        run: bash tests/run_capture_result_native.sh
+      - name: Error serialization
+        run: bash tests/run_error_details_native.sh
+      - name: Storage
+        run: bash tests/run_storage_native.sh
+      - name: JPEG and metadata
+        run: bash tests/run_jpeg_native.sh
+      - name: Core math
+        run: python3 -m unittest discover -s tests -v

@@ -3,6 +3,7 @@
 #import "M7JPEG.h"
 #import "M7Storage.h"
 #import "M7ErrorDetails.h"
+#import "M7CaptureResult.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
@@ -12,6 +13,8 @@
 
 // Preserve the explicit mode across M7 controllers in this Camera process.
 static atomic_bool M7PhotoOnlyPreferred = ATOMIC_VAR_INIT(false);
+// Immutable latest automatic report, retained across M7 controllers in this process.
+static NSDictionary *M7LastTestReport;
 
 static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     if (!value) return @{};
@@ -89,6 +92,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 @property (nonatomic) NSData *captureData;
 @property (nonatomic) NSDictionary *captureMetadata;
 @property (nonatomic) NSError *captureError;
+@property (nonatomic) M7CaptureResult *captureResult;
 @property (nonatomic) BOOL captureRAW;
 @property (atomic) BOOL peakingEnabled;
 @property (atomic) double peakingThreshold;
@@ -337,7 +341,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.1.5";
+    self.captureTrace[@"version"] = @"0.1.6";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -351,7 +355,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 }
 
 - (void)finishCaptureWithError:(NSError *)error {
-    self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil;
+    self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil; self.captureResult = nil;
     [self recordCaptureStage:@"error" details:M7ErrorDetails(error)];
     [self message:[NSString stringWithFormat:@"%@ (%ld) · Detalhes em Exportar → Ver diagnóstico.", error.localizedDescription ?: @"Falha de captura", (long)error.code]];
     dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; self.shareButton.enabled = YES; });
@@ -442,7 +446,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.1.5";
+    diagnostic[@"version"] = @"0.1.6";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -673,6 +677,13 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
             AVCapturePhotoSettings *settings = raw ? [self.controls rawSettingsForOutput:self.photoOutput error:&error] :
                 [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey:AVVideoCodecTypeJPEG}];
             if (!settings) { [self finishCaptureWithError:error]; return; }
+            // Only the explicit compatibility test requests a processed companion.
+            if (raw && self.comparisonActive) {
+                if (![self.photoOutput.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG])
+                    [NSException raise:NSInvalidArgumentException format:@"JPEG de comparação indisponível."];
+                settings = [AVCapturePhotoSettings photoSettingsWithRawPixelFormatType:settings.rawPhotoPixelFormatType
+                    processedFormat:@{AVVideoCodecKey:AVVideoCodecTypeJPEG}];
+            }
             settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationSpeed;
             if (![self.photoOutput.supportedFlashModes containsObject:@(AVCaptureFlashModeOff)])
                 [NSException raise:NSInvalidArgumentException format:@"Flash desligado indisponível nesta configuração."];
@@ -681,10 +692,12 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
             settings.highResolutionPhotoEnabled = !raw;
             self.captureBusy = YES; self.captureRAW = raw; self.captureID = settings.uniqueID;
             self.captureLongEdge = longEdge;
+            self.captureResult = [[M7CaptureResult alloc] initWithID:settings.uniqueID wantsRAW:raw];
             self.captureData = nil; self.captureError = nil; self.captureMetadata = nil;
             dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = NO; [self enableControls:NO]; });
             [self recordCaptureStage:@"submit" details:@{@"id":@(settings.uniqueID),
-                @"rawFormat":@(settings.rawPhotoPixelFormatType), @"highResolution":@(settings.isHighResolutionPhotoEnabled), @"session":[self sessionDiagnostic]}];
+                @"rawFormat":@(settings.rawPhotoPixelFormatType), @"processedFormat":settings.format ?: @{},
+                @"settingsClass":NSStringFromClass(settings.class), @"highResolution":@(settings.isHighResolutionPhotoEnabled), @"session":[self sessionDiagnostic]}];
             if (self.comparisonActive) self.comparisonReport[@"captureID"] = @(settings.uniqueID);
             [self message:@"Capturando…"];
             if (self.photoOnlyRequested && ![self isPhotoOnlySession])
@@ -710,7 +723,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     dispatch_async(self.sessionQueue, ^{
         if (settings.uniqueID != self.captureID) return;
         CMVideoDimensions dimensions = self.captureRAW ? settings.rawPhotoDimensions : settings.photoDimensions;
-        [self recordCaptureStage:@"willBegin" details:@{@"width":@(dimensions.width), @"height":@(dimensions.height)}];
+        [self recordCaptureStage:@"willBegin" details:@{@"width":@(dimensions.width), @"height":@(dimensions.height), @"expectedPhotoCount":@(settings.expectedPhotoCount)}];
     });
 }
 
@@ -720,18 +733,39 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     dispatch_async(self.sessionQueue, ^{
         if (photo.resolvedSettings.uniqueID != self.captureID) return;
         @autoreleasepool {
-            [self recordCaptureStage:@"processing" details:@{@"raw":@(photo.isRawPhoto), @"errorDetails":M7ErrorDetails(error)}];
+            BOOL raw = photo.isRawPhoto;
+            BOOL representationAttempted = NO;
+            NSData *data = nil;
+            NSDictionary *metadata = nil;
+            NSError *processingError = error;
             @try {
-                self.captureError = error;
-                self.captureData = error ? nil : photo.fileDataRepresentation;
-                self.captureMetadata = photo.metadata;
-                if (!error && !self.captureData.length)
-                    self.captureError = [NSError errorWithDomain:@"Manual7.Capture" code:2
-                        userInfo:@{NSLocalizedDescriptionKey:@"O sensor não retornou um arquivo de imagem."}];
-                [self recordCaptureStage:@"representation" details:@{@"bytes":@(self.captureData.length),
-                    @"error":self.captureError.localizedDescription ?: @"", @"errorDetails":M7ErrorDetails(self.captureError)}];
+                CVPixelBufferRef pixel = photo.pixelBuffer;
+                [self recordCaptureStage:@"processing" details:@{@"raw":@(raw),
+                    @"id":@(photo.resolvedSettings.uniqueID), @"hasPixelBuffer":@(pixel != NULL),
+                    @"pixelWidth":@(pixel ? CVPixelBufferGetWidth(pixel) : 0),
+                    @"pixelHeight":@(pixel ? CVPixelBufferGetHeight(pixel) : 0),
+                    @"pixelFormat":@(pixel ? CVPixelBufferGetPixelFormatType(pixel) : 0),
+                    @"errorDetails":M7ErrorDetails(error)}];
+                // A callback failure is not a failed call to fileDataRepresentation.
+                if (!error) {
+                    representationAttempted = YES;
+                    data = photo.fileDataRepresentation;
+                    metadata = photo.metadata;
+                    if (!data.length) processingError = [NSError errorWithDomain:@"Manual7.Capture" code:2
+                        userInfo:@{NSLocalizedDescriptionKey:@"Falha ao gerar o arquivo a partir da foto recebida."}];
+                }
             } @catch (NSException *exception) {
-                self.captureError = [self captureExceptionError:exception];
+                processingError = [self captureExceptionError:exception];
+            }
+            [self recordCaptureStage:representationAttempted ? @"representation" : @"representationSkipped"
+                details:@{@"raw":@(raw), @"attempted":@(representationAttempted), @"bytes":@(data.length),
+                    @"errorDetails":M7ErrorDetails(processingError)}];
+            // RAW and JPEG callbacks may arrive in either order. The companion is
+            // diagnostic only; it must not overwrite RAW bytes or mask a RAW error.
+            if ([self.captureResult receiveID:photo.resolvedSettings.uniqueID raw:raw data:data metadata:metadata error:processingError]) {
+                self.captureError = self.captureResult.processingError;
+                self.captureData = self.captureResult.data;
+                self.captureMetadata = self.captureResult.metadata;
             }
         }
     });
@@ -743,7 +777,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         @autoreleasepool {
             [self recordCaptureStage:@"captureFinished" details:@{@"errorDetails":M7ErrorDetails(error),
                 @"processingError":M7ErrorDetails(self.captureError), @"bytes":@(self.captureData.length)}];
-            NSError *failure = error ?: self.captureError;
+            NSError *failure = [self.captureResult finishWithError:error];
             if (failure || !self.captureData.length) {
                 [self finishCaptureWithError:failure ?: [NSError errorWithDomain:@"Manual7.Capture" code:3
                     userInfo:@{NSLocalizedDescriptionKey:@"A captura terminou sem imagem."}]];
@@ -755,7 +789,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
             photo.data = self.captureData;
             self.pendingPhoto = photo;
             // Keep an owner independent of captureData before clearing callback state.
-            self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil;
+            self.captureBusy = NO; self.captureData = nil; self.captureMetadata = nil; self.captureResult = nil;
             dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; });
             NSError *resizeError = nil;
             if (!self.captureRAW && self.captureLongEdge) {
@@ -933,39 +967,52 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         @"pressure":device.systemPressureState.level ?: @"", @"zoom":@(device.videoZoomFactor)};
 }
 
-// On-screen JSON does not depend on storage or Filza. Collect it on sessionQueue.
+// sessionQueue only: freeze before handing the report to the UI.
+- (NSDictionary *)diagnosticSnapshot:(NSString *)origin status:(NSString *)visibleStatus {
+    NSError *listError = nil;
+    NSArray<NSURL *> *files = [self.storage imageFilesWithError:&listError];
+    NSMutableArray *receipts = [NSMutableArray new];
+    for (NSURL *file in [files subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)12, files.count))]) {
+        NSData *data = [NSData dataWithContentsOfURL:[file URLByAppendingPathExtension:@"photos.json"]];
+        id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        [receipts addObject:@{@"filename":file.lastPathComponent, @"photos":value ?: @{}}];
+    }
+    NSMutableDictionary *comparison = [self.comparisonReport mutableCopy] ?: [NSMutableDictionary new];
+    if ([comparison[@"id"] isEqual:self.captureTrace[@"comparisonID"]]) {
+        [comparison removeObjectForKey:@"capture"];
+        comparison[@"captureReport"] = @"lastCapture";
+    }
+    NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.1.6", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
+        @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
+        @"lastCapture":self.captureTrace ?: @{@"message":@"Nenhuma tentativa registrada nesta instalação."},
+        @"photos":receipts, @"recentPhotosResults":self.photoResults.allValues ?: @[], @"lens":self.lensDiagnostic ?: @{}};
+    return M7JSONSnapshot(diagnostic);
+}
+
 - (void)showDiagnostic {
     NSString *visibleStatus = self.status.text ?: @"";
     dispatch_async(self.sessionQueue, ^{
-        NSError *listError = nil;
-        NSArray<NSURL *> *files = [self.storage imageFilesWithError:&listError];
-        NSMutableArray *receipts = [NSMutableArray new];
-        for (NSURL *file in [files subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)12, files.count))]) {
-            NSData *data = [NSData dataWithContentsOfURL:[file URLByAppendingPathExtension:@"photos.json"]];
-            id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-            [receipts addObject:@{@"filename":file.lastPathComponent, @"photos":value ?: @{}}];
-        }
-        NSMutableDictionary *comparison = [self.comparisonReport mutableCopy] ?: [NSMutableDictionary new];
-        if ([comparison[@"id"] isEqual:self.captureTrace[@"comparisonID"]]) {
-            [comparison removeObjectForKey:@"capture"];
-            comparison[@"captureReport"] = @"lastCapture";
-        }
-        NSDictionary *diagnostic = @{@"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-            @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.1.5", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
-            @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
-            @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
-            @"lastCapture":self.captureTrace ?: @{@"message":@"Nenhuma tentativa registrada nesta instalação."},
-            @"photos":receipts, @"recentPhotosResults":self.photoResults.allValues ?: @[], @"lens":self.lensDiagnostic ?: @{}};
-        NSData *json = [NSJSONSerialization dataWithJSONObject:diagnostic options:NSJSONWritingPrettyPrinted error:nil];
-        NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
-        dispatch_async(dispatch_get_main_queue(), ^{
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Diagnóstico M7 0.1.5" message:text preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                UIPasteboard.generalPasteboard.string = text; [self message:@"Diagnóstico copiado. Cole na conversa para análise."];
-            }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Fechar" style:UIAlertActionStyleCancel handler:nil]];
-            [self presentExportController:alert];
-        });
+        [self presentDiagnostic:[self diagnosticSnapshot:@"manual" status:visibleStatus]];
+    });
+}
+
+- (void)presentDiagnostic:(NSDictionary *)diagnostic {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:diagnostic options:NSJSONWritingPrettyPrinted error:nil];
+    NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
+    NSString *identifier = diagnostic[@"reportID"] ?: @"";
+    NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
+    BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"rawJPEGTest"];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.1.6", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            UIPasteboard.generalPasteboard.string = text;
+            [self message:[NSString stringWithFormat:@"Relatório %@ copiado.", shortID]];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Fechar" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentExportController:alert];
     });
 }
 
@@ -1003,10 +1050,17 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.5" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.6" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
-            [menu addAction:[UIAlertAction actionWithTitle:@"Executar teste RAW sem peaking" style:UIAlertActionStyleDefault
+            [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
+            [menu addAction:[UIAlertAction actionWithTitle:@"Último teste RAW + JPEG" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    NSDictionary *report;
+                    @synchronized (M7CameraController.class) { report = M7LastTestReport; }
+                    if (report) [self presentDiagnostic:report];
+                    else [self message:@"Nenhum teste concluído neste processo da Câmera."];
+                }]];
             if (canRestore) [menu addAction:[UIAlertAction actionWithTitle:@"Restaurar saída de peaking" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) {
                     dispatch_async(self.sessionQueue, ^{
@@ -1088,14 +1142,15 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         if (self.comparisonActive || self.captureBusy || self.pendingPhoto || self.closing) {
             [self message:@"Já existe uma captura ou foto pendente. Conclua-a antes do teste."]; return;
         }
-        self.comparisonReport = [@{@"id":NSUUID.UUID.UUIDString, @"startedAt":@(NSDate.date.timeIntervalSince1970),
+        [self recordSessionEvent:@"rawJPEGTestRequested" details:[self sessionDiagnostic]];
+        self.comparisonReport = [@{@"mode":@"rawPlusJPEG", @"id":NSUUID.UUID.UUIDString, @"startedAt":@(NSDate.date.timeIntervalSince1970),
             @"controllerID":self.controllerID, @"sessionID":self.sessionID, @"processID":@(getpid()),
             @"status":@"configuring", @"before":[self sessionDiagnostic]} mutableCopy];
         self.comparisonActive = YES;
         if (![self configurePeakingOutput:NO]) { [self completeComparison:@"configurationFailed"]; return; }
         self.comparisonReport[@"verifiedSession"] = M7JSONSnapshot([self sessionDiagnostic]);
         self.comparisonReport[@"status"] = @"capturing";
-        // RAW is explicit; no second user action or delayed UISwitch read.
+        // Request RAW + JPEG in the same exposure; only genuine RAW is saved.
         [self captureRAW:YES longEdge:0];
     });
 }
@@ -1109,7 +1164,9 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     if ([self.captureTrace[@"comparisonID"] isEqual:self.comparisonReport[@"id"]])
         self.comparisonReport[@"capture"] = M7JSONSnapshot(self.captureTrace);
     [self.storage writeJSON:self.comparisonReport filename:@"ultimo-teste-raw.json" error:nil];
-    dispatch_async(dispatch_get_main_queue(), ^{ if (!self.closing) [self showDiagnostic]; });
+    NSDictionary *report = [self diagnosticSnapshot:@"rawJPEGTest" status:outcome];
+    @synchronized (M7CameraController.class) { M7LastTestReport = report; }
+    [self presentDiagnostic:report];
 }
 
 - (void)actionsForFile:(NSURL *)file {

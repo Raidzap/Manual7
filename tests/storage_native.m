@@ -24,13 +24,23 @@ int main(void) {
         assert([bytes writeToURL:second options:NSDataWritingAtomic error:nil]);
         assert([store writeJSON:@{@"stage":@"saved"} filename:@"ultima-captura.json" error:&error]);
         NSArray *images = [store imageFilesWithError:&error];
-        assert(!error && images.count == 2 && [images containsObject:first] && [images containsObject:second]);
+        // Directory enumeration may return absolute URLs while appended URLs retain
+        // a base URL; /var may also resolve to /private/var on macOS. Compare the
+        // actual filesystem locations and contents, not NSURL representation.
+        NSMutableSet *paths = [NSMutableSet new];
+        for (NSURL *image in images) {
+            [paths addObject:image.URLByResolvingSymlinksInPath.path];
+            assert([[NSData dataWithContentsOfURL:image] isEqual:bytes]);
+        }
+        assert(!error && images.count == 2);
+        assert([paths containsObject:first.URLByResolvingSymlinksInPath.path]);
+        assert([paths containsObject:second.URLByResolvingSymlinksInPath.path]);
         // JSON receipts and directories named .jpg are not exported as images.
         assert([fm createDirectoryAtURL:[primary URLByAppendingPathComponent:@"fake.jpg"] withIntermediateDirectories:NO attributes:nil error:nil]);
         assert([store imageFilesWithError:nil].count == 2);
 
         assert([fm removeItemAtURL:primary error:nil]);
-        assert([bytes writeToURL:primary options:NSDataWritingAtomic error:nil]);
+        assert([bytes writeToURL:[NSURL fileURLWithPath:primary.path isDirectory:NO] options:NSDataWritingAtomic error:nil]);
         error = nil;
         assert([store prepare:&error] && !error && [store.directory isEqual:fallback]);
         assert(store.attempts.count == 2 && ![store.attempts[0][@"writable"] boolValue]);
@@ -39,7 +49,7 @@ int main(void) {
         assert([[[NSJSONSerialization JSONObjectWithData:json options:0 error:nil] objectForKey:@"stage"] isEqual:@"fallback"]);
 
         assert([fm removeItemAtURL:fallback error:nil]);
-        assert([bytes writeToURL:fallback options:NSDataWritingAtomic error:nil]);
+        assert([bytes writeToURL:[NSURL fileURLWithPath:fallback.path isDirectory:NO] options:NSDataWritingAtomic error:nil]);
         error = nil;
         assert(![store prepare:&error] && error && !store.directory);
         error = nil;

@@ -147,11 +147,11 @@ Para executar os testes reais de codificação JPEG/ImageIO em um Mac com Comman
 bash tests/run_jpeg_native.sh
 ```
 
-Eles verificam bytes idênticos em Original, ausência de ampliação, três tamanhos menores, orientações 1/6/8, dimensões EXIF, ISO, tempo de exposição e rejeição de entrada inválida. **Esses testes nativos não foram executados neste ambiente Linux**; o código foi verificado sintaticamente com o SDK iOS. A captura e a leitura dos arquivos gerados no iPhone continuam sendo parte necessária da validação.
+Eles verificam bytes idênticos em Original, ausência de ampliação, três tamanhos menores, orientações 1/6/8, dimensões EXIF, ISO, tempo de exposição e rejeição de entrada inválida. Esses testes nativos passaram no runner macOS do GitHub Actions na 0.1.6; não são executáveis no ambiente Linux de build. A captura e a leitura dos arquivos gerados no iPhone continuam sendo parte necessária da validação.
 
-O teste `bash tests/run_storage_native.sh` exercita gravação real com Foundation no macOS: pasta principal, alternativa, busca de imagens nas duas pastas e erro quando nenhuma pode ser usada. O código foi compilado sintaticamente com o SDK iOS, mas **sua execução não foi realizada no Linux**. Ele não simula as permissões de sandbox/TCC da Câmera no iPhone.
+O teste `bash tests/run_storage_native.sh` exercita gravação real com Foundation no macOS: pasta principal, alternativa, busca de imagens nas duas pastas e erro quando nenhuma pode ser usada. Esse teste passou no runner macOS do GitHub Actions na 0.1.6. Ele não simula as permissões de sandbox/TCC da Câmera no iPhone.
 
-O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para verificar erro interno, JSON e limite de recursão. Foi verificado sintaticamente com o SDK iOS, mas não executado no Linux.
+O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para verificar erro interno, JSON e limite de recursão. Passou no runner macOS do GitHub Actions na 0.1.6.
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 

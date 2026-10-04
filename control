@@ -1,0 +1,9 @@
+Package: dev.manual7.camera
+Name: Manual7
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Experimental manual camera mode with Bayer DNG capture for iPhone 7 Plus, iOS 15.
+Maintainer: Manual7
+Author: Manual7
+Section: Tweaks
+Depends: mobilesubstrate, firmware (>= 15.0), firmware (<< 16.0)

@@ -1,0 +1,15 @@
+Manual7 0.1.0 — registro de build
+Data UTC: 2026-10-04T06:04:34.269151+00:00
+Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
+Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
+SDK: iPhoneOS15.6, theos/sdks release master-146e41f
+Arquitetura: arm64
+Deployment target: iOS 15.0
+Empacotamento: rootless / iphoneos-arm64
+Alvo de teste pretendido: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
+Comando: make package FINALPACKAGE=1 (THEOS configurado)
+C: oito testes unittest aprovados; -Wall -Wextra -Werror.
+Build Objective-C: compilado, vinculado e assinado pelo Theos.
+Teste físico / visual: não realizado; nenhum iPhone conectado.
+SHA-256 do .deb: bc08a1bbb44130ea6fc97089d8d5a213e6f1a951e734e15136871fabaf30c2f9
+Análise estática: Tweak.m, M7DeviceControls.m e M7CameraController.m sem diagnósticos.

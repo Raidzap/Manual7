@@ -26,8 +26,8 @@ int main(void) {
         assert(tracker.trackingPoints.count == 6);
         assert(fabs([snapshot[@"centerX"] doubleValue]-.5) < .001);
         assert(fabs([snapshot[@"centerY"] doubleValue]-.5) < .001);
-        assert([NSJSONSerialization isValidJSONObject:@{@"snapshot":snapshot,
-            @"points":tracker.trackingPoints}]);
+        NSDictionary *report = @{@"snapshot":snapshot, @"points":tracker.trackingPoints};
+        assert([NSJSONSerialization isValidJSONObject:report]);
         [tracker reset];
         assert([tracker.snapshot[@"analyses"] integerValue] == 0);
         CVPixelBufferRelease(pixel);

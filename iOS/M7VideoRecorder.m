@@ -125,6 +125,14 @@ static NSError *M7VideoRecorderError(NSInteger code, NSString *message) {
 
 - (void)noteDroppedVideoSample { ++self.droppedVideoFrames; }
 
+- (NSTimeInterval)timeOffsetForSampleBuffer:(CMSampleBufferRef)sampleBuffer {
+    if (!self.started || !CMTIME_IS_VALID(self.startTime)) return -1;
+    CMTime timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    if (!CMTIME_IS_VALID(timestamp)) return -1;
+    Float64 seconds = CMTimeGetSeconds(CMTimeSubtract(timestamp, self.startTime));
+    return isfinite(seconds) && seconds >= 0 ? seconds : -1;
+}
+
 - (NSDictionary *)snapshot {
     return @{ @"started":@(self.started), @"finished":@(self.finished),
         @"writerStatus":@(self.writer.status), @"width":@(self.width), @"height":@(self.height),

@@ -11,6 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithOutputURL:(NSURL *)url;
 - (nullable NSError *)appendSampleBuffer:(CMSampleBufferRef)sampleBuffer
                                mediaType:(AVMediaType)mediaType;
+- (NSTimeInterval)timeOffsetForSampleBuffer:(CMSampleBufferRef)sampleBuffer;
 - (void)noteDroppedVideoSample;
 - (NSDictionary *)snapshot;
 - (void)finishWithCompletion:(void (^)(NSURL *url, NSDictionary *summary,

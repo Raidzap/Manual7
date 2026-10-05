@@ -10,8 +10,13 @@ typedef NS_ENUM(NSInteger, M7VideoFrame) {
 FOUNDATION_EXPORT CGSize M7VideoFrameSize(M7VideoFrame frame);
 FOUNDATION_EXPORT CGAffineTransform M7AspectFillVideoTransform(CGSize naturalSize,
     CGAffineTransform preferredTransform, CGSize renderSize);
+FOUNDATION_EXPORT CGAffineTransform M7AspectFillVideoTransformAtPoint(CGSize naturalSize,
+    CGAffineTransform preferredTransform, CGSize renderSize, CGPoint normalizedCenter);
 FOUNDATION_EXPORT NSDictionary *M7VideoFileDetails(NSURL *url);
 FOUNDATION_EXPORT void M7ExportVideoFrame(NSURL *sourceURL, NSURL *outputURL,
     M7VideoFrame frame, void (^completion)(NSDictionary *details, NSError * _Nullable error));
+FOUNDATION_EXPORT void M7ExportTrackedVideoFrame(NSURL *sourceURL, NSURL *outputURL,
+    M7VideoFrame frame, NSArray<NSDictionary *> *trackingPoints,
+    void (^completion)(NSDictionary *details, NSError * _Nullable error));
 
 NS_ASSUME_NONNULL_END

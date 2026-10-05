@@ -11,6 +11,16 @@ CGSize M7VideoFrameSize(M7VideoFrame frame) {
 
 CGAffineTransform M7AspectFillVideoTransform(CGSize naturalSize,
     CGAffineTransform preferredTransform, CGSize renderSize) {
+    return M7AspectFillVideoTransformAtPoint(naturalSize, preferredTransform, renderSize,
+        CGPointMake(.5, .5));
+}
+
+static CGFloat M7Clamp(CGFloat value, CGFloat lower, CGFloat upper) {
+    return MIN(upper, MAX(lower, value));
+}
+
+CGAffineTransform M7AspectFillVideoTransformAtPoint(CGSize naturalSize,
+    CGAffineTransform preferredTransform, CGSize renderSize, CGPoint normalizedCenter) {
     CGRect raw = CGRectMake(0, 0, naturalSize.width, naturalSize.height);
     CGRect oriented = CGRectApplyAffineTransform(raw, preferredTransform);
     CGFloat width = fabs(oriented.size.width), height = fabs(oriented.size.height);
@@ -20,8 +30,10 @@ CGAffineTransform M7AspectFillVideoTransform(CGSize naturalSize,
         CGAffineTransformMakeTranslation(-CGRectGetMinX(oriented), -CGRectGetMinY(oriented)));
     CGFloat scale = MAX(renderSize.width / width, renderSize.height / height);
     transform = CGAffineTransformConcat(transform, CGAffineTransformMakeScale(scale, scale));
-    CGFloat x = (renderSize.width - width * scale) / 2.0;
-    CGFloat y = (renderSize.height - height * scale) / 2.0;
+    CGFloat centerX = M7Clamp(normalizedCenter.x, 0, 1) * width * scale;
+    CGFloat centerY = M7Clamp(normalizedCenter.y, 0, 1) * height * scale;
+    CGFloat x = M7Clamp(renderSize.width/2.0-centerX, renderSize.width-width*scale, 0);
+    CGFloat y = M7Clamp(renderSize.height/2.0-centerY, renderSize.height-height*scale, 0);
     return CGAffineTransformConcat(transform, CGAffineTransformMakeTranslation(x, y));
 }
 
@@ -47,6 +59,27 @@ NSDictionary *M7VideoFileDetails(NSURL *url) {
 
 void M7ExportVideoFrame(NSURL *sourceURL, NSURL *outputURL, M7VideoFrame frame,
     void (^completion)(NSDictionary *, NSError *)) {
+    M7ExportTrackedVideoFrame(sourceURL, outputURL, frame, @[], completion);
+}
+
+static NSArray<NSDictionary *> *M7UsableTrackingPoints(NSArray<NSDictionary *> *points,
+    NSTimeInterval duration) {
+    NSMutableArray<NSDictionary *> *usable = [NSMutableArray new];
+    NSTimeInterval previous = -1;
+    for (NSDictionary *point in points) {
+        double time = [point[@"time"] doubleValue];
+        double x = [point[@"centerX"] doubleValue], y = [point[@"centerY"] doubleValue];
+        if (!isfinite(time) || !isfinite(x) || !isfinite(y) || time < 0 || time > duration) continue;
+        if (time <= previous + .001) continue;
+        [usable addObject:@{@"time":@(time), @"centerX":@(M7Clamp(x, 0, 1)),
+            @"centerY":@(M7Clamp(y, 0, 1))}];
+        previous = time;
+    }
+    return usable;
+}
+
+void M7ExportTrackedVideoFrame(NSURL *sourceURL, NSURL *outputURL, M7VideoFrame frame,
+    NSArray<NSDictionary *> *trackingPoints, void (^completion)(NSDictionary *, NSError *)) {
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:sourceURL options:@{AVURLAssetPreferPreciseDurationAndTimingKey:@YES}];
     AVAssetTrack *track = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
     if (!track) { completion(@{}, M7ReframeError(1, @"O master não contém faixa de vídeo.")); return; }
@@ -61,8 +94,37 @@ void M7ExportVideoFrame(NSURL *sourceURL, NSURL *outputURL, M7VideoFrame frame,
     instruction.timeRange = CMTimeRangeMake(kCMTimeZero, asset.duration);
     AVMutableVideoCompositionLayerInstruction *layer = [AVMutableVideoCompositionLayerInstruction
         videoCompositionLayerInstructionWithAssetTrack:track];
-    CGAffineTransform transform = M7AspectFillVideoTransform(track.naturalSize, track.preferredTransform, target);
-    [layer setTransform:transform atTime:kCMTimeZero];
+    NSTimeInterval duration = CMTimeGetSeconds(asset.duration);
+    NSArray<NSDictionary *> *usable = M7UsableTrackingPoints(trackingPoints, duration);
+    if (!usable.count) {
+        [layer setTransform:M7AspectFillVideoTransform(track.naturalSize,
+            track.preferredTransform, target) atTime:kCMTimeZero];
+    } else {
+        NSDictionary *first = usable.firstObject;
+        CGPoint firstCenter = CGPointMake([first[@"centerX"] doubleValue], [first[@"centerY"] doubleValue]);
+        CGAffineTransform firstTransform = M7AspectFillVideoTransformAtPoint(track.naturalSize,
+            track.preferredTransform, target, firstCenter);
+        [layer setTransform:firstTransform atTime:kCMTimeZero];
+        NSDictionary *previous = first;
+        CGAffineTransform previousTransform = firstTransform;
+        for (NSUInteger index = 1; index < usable.count; ++index) {
+            NSDictionary *point = usable[index];
+            CMTime start = CMTimeMakeWithSeconds([previous[@"time"] doubleValue], 600);
+            CMTime end = CMTimeMakeWithSeconds([point[@"time"] doubleValue], 600);
+            CMTime span = CMTimeSubtract(end, start);
+            CGPoint center = CGPointMake([point[@"centerX"] doubleValue], [point[@"centerY"] doubleValue]);
+            CGAffineTransform nextTransform = M7AspectFillVideoTransformAtPoint(track.naturalSize,
+                track.preferredTransform, target, center);
+            if (CMTimeCompare(span, kCMTimeZero) > 0) {
+                [layer setTransformRampFromStartTransform:previousTransform toEndTransform:nextTransform
+                    timeRange:CMTimeRangeMake(start, span)];
+            }
+            previous = point;
+            previousTransform = nextTransform;
+        }
+        [layer setTransform:previousTransform
+            atTime:CMTimeMakeWithSeconds([previous[@"time"] doubleValue], 600)];
+    }
     instruction.layerInstructions = @[layer];
     composition.instructions = @[instruction];
 
@@ -80,6 +142,8 @@ void M7ExportVideoFrame(NSURL *sourceURL, NSURL *outputURL, M7VideoFrame frame,
         details[@"frame"] = frame == M7VideoFrameVertical ? @"vertical9x16" : @"horizontal16x9";
         details[@"renderWidth"] = @(target.width);
         details[@"renderHeight"] = @(target.height);
+        details[@"trackingPointCount"] = @(usable.count);
+        details[@"dynamicReframe"] = @(usable.count > 0);
         NSError *error = exporter.status == AVAssetExportSessionStatusCompleted ? nil :
             exporter.error ?: M7ReframeError(4, @"A exportação não terminou.");
         completion(details, error);

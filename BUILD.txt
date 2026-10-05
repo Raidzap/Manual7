@@ -1,5 +1,5 @@
-Manual7 0.1.6 — registro de build
-Data UTC: 2026-10-04T07:58:42.806948+00:00
+Manual7 0.2.0 — registro de build
+Data UTC: 2026-10-05T21:47:00Z
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
@@ -7,15 +7,14 @@ Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos.
 Testes Linux: 11 aprovados (8 C; 3 contratos de callbacks com SDK iOS).
-Análise estática: M7CameraController.m e M7CaptureResult.m sem diagnósticos.
-Testes nativos: Foundation (seleção de captura, erros e armazenamento) e ImageIO/JPEG passaram em macOS-14.
-CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37187353790
-Commit do CI: 81e0e764077c82e6876864dde2823e77997a3cbb (código do pacote; alterações posteriores apenas documentais).
-Seleção de captura: fixtures em ambas as ordens RAW/JPEG, sem substituir RAW por JPEG; erros, dados ausentes/vazios e callbacks de outra captura/duplicados/atrasados.
-Mudança: ação de compatibilidade RAW + JPEG no mesmo disparo, mantendo somente RAW como destino de salvamento nesse teste.
-Diagnóstico: distingue callback com erro de fileDataRepresentation; registra pixel buffer e callbacks por formato.
-Relatório automático: congelado antes da apresentação; origem e ID visíveis; último resultado retido no processo da Câmera.
-Estado informado pelo usuário: JPEG salva. Teste 0.1.5 confirma RAW -11800 / -12780 mesmo sem saída de vídeo/peaking; a remoção não resolve.
-Causa de -12780: não identificada. Sucesso de captura RAW na 0.1.6: não confirmado.
-Limites: testes de fixtures não executam sensor, UIKit, AVFoundation de captura ou PhotoKit no iPhone.
-SHA-256 do .deb: a45a8b74524a93c3ca8f28cd1f3e004c402f5fa3bf08eb1e8e48bde5fb4197bb
+Análise estática: controlador, formato, gravador e Reframe sem diagnósticos.
+Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, geometria/exportação Reframe, estado do gravador e Core aprovados.
+CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37378095792
+Commit de código testado: 3550af19ab381ceb804404929a6f11fa261124a0
+Vídeo: master H.264 em tempo real, AAC quando disponível, formato 4:3 preferencial a 30 fps.
+Reframe: 1920 × 1080, 1080 × 1920 ou ambos, derivados do mesmo master e salvos serialmente no Fotos.
+Recuperação: arquivos finais pendentes e master após falha de exportação são retidos em temporários e redescobertos.
+Diagnóstico: estado de sessão/writer, frames, áudio, drops, backpressure, espaço, arquivos, exportações, PhotoKit e mudanças de controles.
+Estado informado pelo usuário: JPEG salva. RAW 0.1.5 falha com −11800 / −12780 mesmo sem saída de vídeo; teste RAW+JPEG 0.1.6 ainda não executado.
+Validação física 0.2.0: ainda não realizada; testes não executam sensor, microfone, PhotoKit, térmica ou desempenho no A10.
+SHA-256 do .deb: db1bfec4cf33c9db92611b51b31ef333a71f4f701a689ed8fe107d1823b304f7

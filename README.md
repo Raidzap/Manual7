@@ -93,7 +93,7 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na pré-release mais recente do repositório.
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.2.0](https://github.com/Raidzap/Manual7/releases/tag/v0.2.0).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
 2. Transfira `dev.manual7.camera_0.2.0_iphoneos-arm64.deb` para o iPhone.
@@ -177,7 +177,7 @@ O teste `bash tests/run_storage_native.sh` exercita gravação real com Foundati
 
 O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para verificar erro interno, JSON e limite de recursão. Passou no runner macOS do GitHub Actions na 0.1.6.
 
-`bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. Esses testes não simulam câmera, microfone, PhotoKit, temperatura ou capacidade de codificação do iPhone.
+`bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. Ambos passaram no [CI macOS da 0.2.0](https://github.com/Raidzap/Manual7/actions/runs/37378095792). Esses testes não simulam câmera, microfone, PhotoKit, temperatura ou capacidade de codificação do iPhone.
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 

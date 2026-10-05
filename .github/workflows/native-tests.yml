@@ -20,5 +20,9 @@ jobs:
         run: bash tests/run_storage_native.sh
       - name: JPEG and metadata
         run: bash tests/run_jpeg_native.sh
+      - name: Video reframe geometry
+        run: bash tests/run_video_reframe_native.sh
+      - name: Video recorder state
+        run: bash tests/run_video_recorder_native.sh
       - name: Core math
         run: python3 -m unittest discover -s tests -v

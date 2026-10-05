@@ -26,6 +26,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Returned settings request a genuine Bayer RAW photo (DNG representation).
 - (nullable AVCapturePhotoSettings *)rawSettingsForOutput:(AVCapturePhotoOutput *)output
     error:(NSError **)error;
+// Selects the best real-time 4:3 format at the requested frame rate. The
+// capture session owner must wrap this call in begin/commitConfiguration.
+- (nullable NSDictionary *)configureVideoFormatAtFPS:(NSInteger)fps error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END

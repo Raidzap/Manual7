@@ -1,8 +1,26 @@
-# Manual7 — 0.1.6 experimental
+# Manual7 — 0.2.0 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. O teste da 0.1.5 confirmou que RAW ainda falha com AVFoundation −11800 / OSStatus −12780 mesmo com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. Remover a saída de peaking não resolveu. A 0.1.6 oferece uma captura alternativa RAW + JPEG e corrige a distinção entre falha no callback e falha na geração do arquivo. **Não há correção RAW confirmada no aparelho.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. O teste da 0.1.5 confirmou que RAW ainda falha com AVFoundation −11800 / OSStatus −12780 mesmo com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. Remover a saída de peaking não resolveu. A 0.1.6 acrescentou uma captura alternativa RAW + JPEG; esse teste ainda não foi executado no aparelho. A 0.2.0 acrescenta gravação de vídeo e Reframe, mas **essas funções também ainda precisam de validação física no iPhone**.
+
+## Vídeo e Reframe na 0.2.0
+
+O seletor **Modo** alterna entre Foto e Vídeo. O modo Vídeo mantém ISO, shutter em 1/3 stop, AUTO/M/AE-L, AF/MF/AF-L, compensação EV e focus peaking. Os ajustes podem mudar durante a gravação. A lente, o modo de captura e o formato de saída ficam bloqueados enquanto o master está sendo gravado ou processado.
+
+O M7 seleciona em tempo de execução o melhor formato 4:3 que a lente física oferece a 30 fps, dando preferência a resoluções de até 1920 × 1440 para limitar a carga no A10. Se a lente não expuser um formato 4:3 adequado, usa o formato mais próximo e registra `fourThirds: false`, dimensões, pixel format, faixa de ISO e exposição no relatório.
+
+O seletor **Reframe** oferece:
+
+- **16:9:** gera um MP4 horizontal 1920 × 1080.
+- **9:16:** gera um MP4 vertical 1080 × 1920.
+- **Ambos:** grava uma vez e gera os dois arquivos, centralizados no mesmo take.
+
+A gravação cria um master H.264 temporário a partir dos sample buffers do `AVCaptureVideoDataOutput` e acrescenta AAC quando o microfone está autorizado e disponível. O Reframe ocorre após parar: duas composições usam o mesmo master e preservam a faixa de áudio. Esse desenho mantém as saídas sincronizadas sem depender de multicâmera. As linhas no visor mostram os recortes simultâneos.
+
+Os arquivos finais são enviados ao Fotos um por vez. O master é removido somente depois do processamento. Se o Fotos falhar, o MP4 fica pendente na pasta temporária e **Exportar → Tentar salvar vídeos pendentes** repete a inclusão. Se a exportação do enquadramento falhar, o master 4:3 é preservado como recuperação. Ao reabrir M7, MP4/MOV temporários são descobertos novamente. O fechamento exige salvar ou descartar explicitamente qualquer vídeo pendente.
+
+`lastVideo` registra configuração, autorização de microfone/Fotos, espaço disponível, estado do writer, frames gravados, frames descartados, backpressure, áudio, arquivo master, geometria e status de cada exportação, resultado do Fotos, identificador do asset e limpeza. `videoWriterNow`, `videoFormat` e `pendingVideos` aparecem no diagnóstico geral. Mudanças de ISO, shutter, foco, EV, travas, lente e peaking são correlacionadas com a gravação.
 
 ## Captura de compatibilidade na 0.1.6
 
@@ -42,6 +60,8 @@ Os dois seletores foram corrigidos. Um protocolo adicional os torna obrigatório
 | Shutter | Grade exata de 1/3 stop: `t(k) = 2^(k/3)` segundos. ISO e shutter são aplicados ao soltar o slider. O visor mostra o valor reportado pelo dispositivo. |
 | DNG RAW | Captura Bayer RAW com `AVCapturePhotoOutput`; usa `fileDataRepresentation` para obter o arquivo. Desabilitado quando a lente/sessão não expõe RAW. |
 | JPEG | Desligar DNG RAW seleciona JPEG. Tamanho Original ou redução para 3264, 2560, 2048, 1600 ou 1280 px no maior lado. RAW+JPEG simultâneo está restrito ao teste de compatibilidade. |
+| Vídeo | Master H.264 em formato próximo de 4:3 a 30 fps, AAC quando o microfone está disponível e ajustes manuais durante a gravação. |
+| Reframe | Exportação centralizada 1920 × 1080, 1080 × 1920 ou as duas a partir do mesmo master, preservando áudio. |
 | Foco manual | Posição normalizada de 0 a 1, sem inferir distância em metros; atualiza durante o arraste com limitação de frequência. |
 | Focus peaking | Bordas em verde, limiar ajustável, análise de luminância reduzida a até 480 pixels na maior dimensão e no máximo 10 atualizações/s. |
 | Compensação EV | Passos de 1/3 EV em AUTO, dentro dos limites do aparelho. Em M, o fotômetro auxilia o ajuste de ISO e shutter. |
@@ -73,17 +93,17 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.1.6](https://github.com/Raidzap/Manual7/releases/tag/v0.1.6).
+Baixe o pacote `.deb` e seu checksum na pré-release mais recente do repositório.
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
-2. Transfira `dev.manual7.camera_0.1.6_iphoneos-arm64.deb` para o iPhone.
+2. Transfira `dev.manual7.camera_0.2.0_iphoneos-arm64.deb` para o iPhone.
 3. Abra o pacote em um instalador de `.deb`, como o do Filza, se já estiver instalado. Alternativamente, em um terminal no iPhone, use o comando abaixo com o caminho real do arquivo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
-sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.1.6_iphoneos-arm64.deb
+sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.2.0_iphoneos-arm64.deb
 ```
 
 O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. A dependência `mobilesubstrate` é a interface de compatibilidade de hooking; use a implementação já fornecida pelo jailbreak.
@@ -96,6 +116,7 @@ O visor permanece fixo acima dos controles. Deslize a área dos controles para a
 - Selecione **MF** e ative **Peaking** para ajustar o foco. Um limiar menor destaca mais bordas.
 - Use **AUTO** para compensação EV. **AE-L** mantém a exposição; **AF-L** mantém o foco atual. As travas são imediatas: aguarde o foco/exposição estabilizarem antes de travar.
 - Para JPEG, desligue **DNG RAW** e escolha **Tamanho**. Para RAW, ative **DNG RAW**. Toque em **FOTOGRAFAR**. O disparador aguarda os callbacks de aplicação dos ajustes manuais pendentes.
+- Para vídeo, selecione **Vídeo**, escolha **16:9**, **9:16** ou **Ambos** em Reframe e toque em **GRAVAR VÍDEO**. Toque novamente para parar e mantenha o M7 aberto até o Fotos confirmar as saídas.
 - **Exportar** lista até 12 cópias locais recentes, **Ver diagnóstico** e a ação de salvar uma foto pendente, quando houver. Ao selecionar uma foto, escolha **Adicionar ao Fotos** ou **Compartilhar**. A folha de compartilhamento permite salvar no app Arquivos e oferece as ações disponíveis no sistema para o formato selecionado. Fotos anteriores continuam preservadas; a interface lista somente as 12 recentes.
 
 As capturas confirmadas ficam no app Fotos. **Exportar pode ficar sem imagens mesmo após um salvamento bem-sucedido**, pois lista somente cópias locais. Quando o processo consegue gravá-las, o caminho aparece em `outputDirectory`; caso contrário, esse campo fica vazio. Uma falha no Fotos não apaga uma cópia local existente. Exportar não remove arquivos; o espaço ocupado pelas cópias cresce com as capturas.
@@ -115,6 +136,9 @@ Quando o armazenamento funciona, `ultima-captura.json` preserva as etapas após 
 7. Feche M7 e teste foto/vídeo na Câmera normal. Repita abrir/fechar, alternar lentes e bloquear/desbloquear o aparelho. Confirme que não há sessão presa, tela preta ou travas persistentes.
 8. Teste retorno de segundo plano e captura repetida por alguns minutos, observando latência, aquecimento e uso de armazenamento.
 9. Com as pastas locais negadas, confirme que o diagnóstico avança de `localBackupUnavailable` para `submit`, `encodedPhotoReady`, importação com `source: data` e `state: saved`. Se o Fotos falhar, confirme `pendingPhotoBytes > 0`, nova tentativa sem novo disparo e aviso ao fechar. Esses fluxos precisam ser verificados no aparelho.
+10. Em Vídeo/Ambos, grave ao menos 15 s com áudio. Confirme dois assets no Fotos, um 1920 × 1080 e outro 1080 × 1920, mesma duração, áudio sincronizado e conteúdo central coerente com as duas guias.
+11. Durante outra gravação, altere ISO/shutter, foco, EV e travas. Confirme efeito visual e eventos `controlChange`; confira `videoFrames`, `audioSamples`, `droppedVideoFrames` e backpressure.
+12. Repita 16:9, 9:16 e Ambos em cada lente. Interrompa uma gravação indo ao segundo plano e confirme finalização ou erro explícito. Se o Fotos falhar, use **Tentar salvar vídeos pendentes** sem gravar novamente.
 
 Se ocorrer erro de sessão, a interface permite fechar e reabrir o modo. Se a Câmera não abrir após instalar, desative a injeção para ela pelo recurso disponível no jailbreak ou remova o pacote em um terminal:
 
@@ -126,9 +150,9 @@ Depois feche e reabra a Câmera. A remoção do pacote não apaga as capturas ex
 
 ## Arquitetura e limites desta versão
 
-`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em fila serial. `M7DeviceControls` aplica os controles sob `lockForConfiguration`. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para a redução exclusiva de JPEG, preservando o tamanho original quando solicitado. `M7Storage` verifica as pastas persistentes e reúne suas imagens para exportação.
+`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em filas seriais de sessão e mídia. `M7DeviceControls` aplica os controles e seleciona o formato de vídeo. `M7VideoRecorder` grava os sample buffers em um master H.264/AAC. `M7VideoReframe` aplica as composições 16:9/9:16. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para JPEG. `M7Storage` mantém as cópias opcionais e relatórios.
 
-O modo M7 tem interface em retrato, captura apenas pelas lentes traseiras e usa flash desligado. Não inclui vídeo, Live Photos, HDR computacional, modo Retrato, câmera frontal, ProRAW ou controle do disparador nativo enquanto M7 está aberto. O botão M7 exige disponibilidade dos dados protegidos do aparelho; a operação pela tela bloqueada não é suportada neste protótipo. A arbitragem com a Câmera nativa ainda depende de validação real no iOS 15.8.3.
+O modo M7 tem interface em retrato, usa as lentes traseiras e mantém flash/torch desligados. Vídeo é 30 fps; não inclui 4K garantido, 60/120/240 fps, estabilização eletrônica, HDR, Live Photos, modo Retrato, câmera frontal, ProRAW, rastreamento automático do assunto ou controle do disparador nativo. O Reframe é um recorte central fixo; não usa IA para acompanhar pessoas. Resolução/fps efetivos do master dependem dos formatos expostos pela lente no iOS 15.8.3 e aparecem no relatório. A carga térmica e o desempenho do A10 ainda precisam de medição física.
 
 ## Compilar e testar
 
@@ -153,6 +177,8 @@ O teste `bash tests/run_storage_native.sh` exercita gravação real com Foundati
 
 O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para verificar erro interno, JSON e limite de recursão. Passou no runner macOS do GitHub Actions na 0.1.6.
 
+`bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. Esses testes não simulam câmera, microfone, PhotoKit, temperatura ou capacidade de codificação do iPhone.
+
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 
 ## Visualizador de crashes
@@ -165,6 +191,9 @@ Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferra
 - [Apple — captura RAW e ProRAW](https://developer.apple.com/documentation/avfoundation/capturing-photos-in-raw-and-apple-proraw-formats): formatos disponíveis, captura e representação DNG.
 - [Apple — exposição manual](https://developer.apple.com/documentation/avfoundation/avcapturedevice/setexposuremodecustom(duration:iso:completionhandler:)): priorização de velocidade para respeitar ISO e duração manuais.
 - [Apple — foco manual](https://developer.apple.com/documentation/avfoundation/avcapturedevice/setfocusmodelocked(lensposition:completionhandler:)): posição da lente e trava.
+- [Apple — formato ativo](https://developer.apple.com/documentation/avfoundation/avcapturedevice/activeformat): seleção do formato e duração de frame dentro da configuração da sessão.
+- [Apple — gravação em tempo real](https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/AVFoundationPG/Articles/05_Export.html): AVAssetWriter com entradas marcadas como fontes em tempo real.
+- [Apple — composição de vídeo](https://developer.apple.com/documentation/avfoundation/avassetexportsession/videocomposition): aplicação de transformações e render size durante a exportação.
 - [Theos — rootless](https://theos.dev/docs/rootless): empacotamento e arquitetura.
 - [Dopamine — repositório oficial](https://github.com/opa334/Dopamine): jailbreak rootless.
 
@@ -175,8 +204,8 @@ Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferra
 
 - [Apple — recurso PhotoKit a partir de dados](https://developer.apple.com/documentation/photos/phassetcreationrequest/addresource(with:data:options:)): inclusão dos bytes codificados sem arquivo intermediário obrigatório.
 
-## Verificação automatizada da 0.1.6
+## Verificação automatizada
 
 `tests/run_capture_result_native.sh` exercita o seletor de resultados usado em produção com Foundation: ambas as ordens de callbacks, isolamento de RAW, sucesso JPEG, erro de processamento/término, bytes vazios, ausência de RAW e callbacks atrasados/duplicados/de outra captura. Os dados desse teste são fixtures; não simulam um sensor nem validam um DNG.
 
-O workflow `.github/workflows/native-tests.yml` executa os quatro programas nativos (seleção de captura, erros, armazenamento e JPEG/ImageIO) em macOS, além dos testes C. Os contratos de compilação iOS são executados separadamente no ambiente Theos Linux. Resultados da versão são registrados em `BUILD.txt`. Esses testes não substituem a validação da captura e do Fotos no iPhone.
+O workflow `.github/workflows/native-tests.yml` executa os programas nativos de captura, erros, armazenamento, JPEG/ImageIO, gravação e Reframe em macOS, além dos testes C. Os contratos de compilação iOS são executados separadamente no ambiente Theos Linux. Resultados da versão são registrados em `BUILD.txt`. Esses testes não substituem a validação da câmera, microfone, Fotos, desempenho e temperatura no iPhone.

@@ -1,6 +1,7 @@
 #import "M7DeviceControls.h"
 #import "../Core/M7Math.h"
 #import <math.h>
+#import <limits.h>
 
 static BOOL M7Fail(NSError **error, NSString *reason) {
     if (error) *error = [NSError errorWithDomain:@"Manual7" code:1
@@ -137,5 +138,54 @@ static BOOL M7Fail(NSError **error, NSString *reason) {
     s.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationSpeed;
     s.flashMode = AVCaptureFlashModeOff;
     return s;
+}
+
+- (NSDictionary *)configureVideoFormatAtFPS:(NSInteger)fps error:(NSError **)error {
+    AVCaptureDevice *device = self.device;
+    AVCaptureDeviceFormat *bestFourThirds = nil;
+    AVCaptureDeviceFormat *bestFallback = nil;
+    int64_t bestFourScore = LLONG_MIN, bestFallbackScore = LLONG_MIN;
+    NSUInteger compatible = 0;
+    for (AVCaptureDeviceFormat *format in device.formats) {
+        BOOL supportsFPS = NO;
+        for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
+            if (range.minFrameRate <= fps && range.maxFrameRate >= fps) { supportsFPS = YES; break; }
+        }
+        if (!supportsFPS) continue;
+        CMVideoDimensions size = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+        NSInteger width = MAX(size.width, size.height), height = MIN(size.width, size.height);
+        if (width < 640 || height < 480) continue;
+        ++compatible;
+        int64_t pixels = (int64_t)width * height;
+        double ratio = (double)width / height;
+        BOOL fourThirds = fabs(ratio - 4.0/3.0) < .035;
+        // Prefer the largest format up to 1920x1440. If only larger formats
+        // exist, prefer the closest one to keep A10 encoding sustainable.
+        int64_t budget = 1920LL * 1440LL;
+        int64_t resolutionScore = pixels <= budget ? pixels : budget - (pixels - budget);
+        int64_t score = resolutionScore - (int64_t)(fabs(ratio - 4.0/3.0) * 1000000.0);
+        if (fourThirds && score > bestFourScore) { bestFourScore = score; bestFourThirds = format; }
+        if (score > bestFallbackScore) { bestFallbackScore = score; bestFallback = format; }
+    }
+    AVCaptureDeviceFormat *selected = bestFourThirds ?: bestFallback;
+    if (!selected) {
+        M7Fail(error, @"Nenhum formato de vídeo compatível com 30 fps foi encontrado.");
+        return nil;
+    }
+    if (![device lockForConfiguration:error]) return nil;
+    @try {
+        device.activeFormat = selected;
+        CMTime frameDuration = CMTimeMake(1, (int32_t)fps);
+        device.activeVideoMinFrameDuration = frameDuration;
+        device.activeVideoMaxFrameDuration = frameDuration;
+    } @finally { [device unlockForConfiguration]; }
+    CMVideoDimensions size = CMVideoFormatDescriptionGetDimensions(selected.formatDescription);
+    NSInteger width = MAX(size.width, size.height), height = MIN(size.width, size.height);
+    return @{ @"width":@(width), @"height":@(height), @"fps":@(fps),
+        @"fourThirds":@(selected == bestFourThirds), @"compatibleFormats":@(compatible),
+        @"pixelFormat":@(CMFormatDescriptionGetMediaSubType(selected.formatDescription)),
+        @"minISO":@(selected.minISO), @"maxISO":@(selected.maxISO),
+        @"minExposure":@(CMTimeGetSeconds(selected.minExposureDuration)),
+        @"maxExposure":@(CMTimeGetSeconds(selected.maxExposureDuration)) };
 }
 @end

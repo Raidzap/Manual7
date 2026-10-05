@@ -4,6 +4,8 @@
 #import "M7Storage.h"
 #import "M7ErrorDetails.h"
 #import "M7CaptureResult.h"
+#import "M7VideoRecorder.h"
+#import "M7VideoReframe.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
@@ -33,17 +35,21 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 @implementation M7Photo
 @end
 
-@interface M7CameraController () <M7RequiredPhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
+@interface M7CameraController () <M7RequiredPhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate,
+    AVCaptureAudioDataOutputSampleBufferDelegate>
 @property (nonatomic) dispatch_queue_t sessionQueue;
 @property (nonatomic) dispatch_queue_t videoQueue;
 @property (nonatomic) AVCaptureSession *session;
 @property (nonatomic) AVCaptureDeviceInput *input;
 @property (nonatomic) AVCapturePhotoOutput *photoOutput;
 @property (nonatomic) AVCaptureVideoDataOutput *videoOutput;
+@property (nonatomic) AVCaptureAudioDataOutput *audioOutput;
+@property (nonatomic) AVCaptureDeviceInput *audioInput;
 @property (nonatomic) M7DeviceControls *controls;
 @property (nonatomic) AVCaptureVideoPreviewLayer *preview;
 @property (nonatomic) UIView *previewView;
 @property (nonatomic) UIImageView *peakingView;
+@property (nonatomic) CAShapeLayer *reframeGuideLayer;
 @property (nonatomic) UILabel *readout;
 @property (nonatomic) UILabel *status;
 @property (nonatomic) UISlider *isoSlider;
@@ -54,6 +60,11 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 @property (nonatomic) UISegmentedControl *exposureMode;
 @property (nonatomic) UISegmentedControl *focusMode;
 @property (nonatomic) UISegmentedControl *lens;
+@property (nonatomic) UISegmentedControl *captureMode;
+@property (nonatomic) UISegmentedControl *videoFormat;
+@property (nonatomic) UIView *rawRow;
+@property (nonatomic) UIView *sizeRow;
+@property (nonatomic) UIView *videoFormatRow;
 @property (nonatomic) UISwitch *rawSwitch;
 @property (nonatomic) UIButton *sizeButton;
 @property (nonatomic) NSUInteger jpegLongEdge;
@@ -68,6 +79,22 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 @property (nonatomic) NSMutableArray *sessionEvents;
 @property (nonatomic) M7Storage *storage;
 @property (nonatomic) NSDictionary *lensDiagnostic;
+@property (nonatomic) NSDictionary *videoFormatDiagnostic;
+@property (nonatomic) NSMutableDictionary *videoTrace;
+@property (nonatomic) NSMutableArray<NSDictionary *> *pendingVideos;
+@property (nonatomic) M7VideoRecorder *videoRecorder;
+@property (atomic) BOOL videoRecording;
+@property (atomic) BOOL videoProcessing;
+@property (atomic) BOOL videoModeActive;
+@property (nonatomic) CFTimeInterval videoStartedAt;
+@property (nonatomic) NSInteger activeVideoOutputMode;
+@property (nonatomic) UIBackgroundTaskIdentifier videoBackgroundTask;
+@property (nonatomic) NSURL *videoMasterURL;
+@property (nonatomic) NSArray<NSNumber *> *videoFramesToExport;
+@property (nonatomic) NSUInteger videoExportIndex;
+@property (nonatomic) NSUInteger videoSavedCount;
+@property (nonatomic) NSUInteger videoFailedCount;
+@property (nonatomic) NSUInteger videoExportFailureCount;
 @property (nonatomic) NSMutableSet<NSString *> *photosInFlight;
 @property (nonatomic) NSMutableSet<NSString *> *photosImported;
 @property (nonatomic) NSMutableDictionary<NSString *, NSDictionary *> *photoResults;
@@ -141,11 +168,13 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     self.view.backgroundColor = UIColor.blackColor;
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     self.sessionQueue = dispatch_queue_create("dev.manual7.session", DISPATCH_QUEUE_SERIAL);
-    self.videoQueue = dispatch_queue_create("dev.manual7.peaking", DISPATCH_QUEUE_SERIAL);
+    self.videoQueue = dispatch_queue_create("dev.manual7.media", DISPATCH_QUEUE_SERIAL);
     self.controllerID = NSUUID.UUID.UUIDString;
     self.sessionID = NSUUID.UUID.UUIDString;
     self.photoOnlyRequested = atomic_load(&M7PhotoOnlyPreferred);
     self.sessionEvents = [NSMutableArray new];
+    self.pendingVideos = [NSMutableArray new];
+    self.videoBackgroundTask = UIBackgroundTaskInvalid;
     self.session = [AVCaptureSession new]; M7MarkSessionOwned(self.session);
     self.peakingThreshold = .2;
 
@@ -174,6 +203,11 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     self.peakingView = [UIImageView new]; self.peakingView.contentMode = UIViewContentModeScaleAspectFit;
     self.peakingView.userInteractionEnabled = NO;
     [self.previewView addSubview:self.peakingView];
+    self.reframeGuideLayer = [CAShapeLayer layer];
+    self.reframeGuideLayer.fillColor = UIColor.clearColor.CGColor;
+    self.reframeGuideLayer.lineWidth = 1.5;
+    self.reframeGuideLayer.lineDashPattern = @[@7, @5];
+    [self.previewView.layer addSublayer:self.reframeGuideLayer];
     self.readout = [UILabel new]; self.readout.numberOfLines = 2;
     self.readout.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     self.readout.textAlignment = NSTextAlignmentCenter;
@@ -184,6 +218,10 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     self.status.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.status];
 
+    self.captureMode = [[UISegmentedControl alloc] initWithItems:@[@"Foto", @"Vídeo"]];
+    self.captureMode.selectedSegmentIndex = 0;
+    [self.captureMode addTarget:self action:@selector(changeCaptureMode) forControlEvents:UIControlEventValueChanged];
+    [stack addArrangedSubview:[self row:@"Modo" control:self.captureMode]];
     self.lens = [[UISegmentedControl alloc] initWithItems:@[@"1×", @"2×"]]; self.lens.selectedSegmentIndex = 0;
     [self.lens addTarget:self action:@selector(changeLens) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"Lente" control:self.lens]];
@@ -210,10 +248,18 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     [stack addArrangedSubview:[self row:@"Perto/longe" control:self.focusSlider]];
     self.rawSwitch = [UISwitch new]; self.rawSwitch.on = YES;
     [self.rawSwitch addTarget:self action:@selector(updateSizeControl) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"DNG RAW" control:self.rawSwitch]];
+    self.rawRow = [self row:@"DNG RAW" control:self.rawSwitch];
+    [stack addArrangedSubview:self.rawRow];
     self.sizeButton = [self button:@"Original" action:@selector(chooseJPEGSize)];
     self.sizeButton.accessibilityLabel = @"Tamanho da fotografia JPEG";
-    [stack addArrangedSubview:[self row:@"Tamanho" control:self.sizeButton]];
+    self.sizeRow = [self row:@"Tamanho" control:self.sizeButton];
+    [stack addArrangedSubview:self.sizeRow];
+    self.videoFormat = [[UISegmentedControl alloc] initWithItems:@[@"16:9", @"9:16", @"Ambos"]];
+    self.videoFormat.selectedSegmentIndex = 2;
+    [self.videoFormat addTarget:self action:@selector(changeVideoFormat) forControlEvents:UIControlEventValueChanged];
+    self.videoFormatRow = [self row:@"Reframe" control:self.videoFormat];
+    self.videoFormatRow.hidden = YES;
+    [stack addArrangedSubview:self.videoFormatRow];
     self.peakingSwitch = [UISwitch new];
     [self.peakingSwitch addTarget:self action:@selector(changePeaking) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"Peaking" control:self.peakingSwitch]];
@@ -271,6 +317,21 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         self.photosImported = [NSMutableSet new];
         self.photoResults = [NSMutableDictionary new];
         [self.storage prepare:nil];
+        NSError *videoDirectoryError = nil;
+        NSURL *videoDirectory = [self videoWorkingDirectoryWithError:&videoDirectoryError];
+        NSArray<NSURL *> *videoFiles = videoDirectory ? [NSFileManager.defaultManager
+            contentsOfDirectoryAtURL:videoDirectory includingPropertiesForKeys:@[NSURLIsRegularFileKey]
+            options:NSDirectoryEnumerationSkipsHiddenFiles error:&videoDirectoryError] : @[];
+        for (NSURL *url in videoFiles) {
+            NSNumber *regular = nil; [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+            NSString *extension = url.pathExtension.lowercaseString;
+            if (!regular.boolValue || (![@"mp4" isEqual:extension] && ![@"mov" isEqual:extension])) continue;
+            NSString *label = [url.lastPathComponent containsString:@"vertical9x16"] ? @"vertical9x16" :
+                [url.lastPathComponent containsString:@"horizontal16x9"] ? @"horizontal16x9" : @"master4x3";
+            [self.pendingVideos addObject:@{@"url":url, @"label":label}];
+        }
+        [self recordSessionEvent:@"temporaryVideoDiscovery" details:@{@"pending":@(self.pendingVideos.count),
+            @"directory":videoDirectory.path ?: @"", @"error":M7ErrorDetails(videoDirectoryError)}];
         // Keep the previous attempt available until the next shutter press.
         for (NSURL *directory in self.storage.candidates) {
             NSURL *traceFile = [directory URLByAppendingPathComponent:@"ultima-captura.json"];
@@ -298,6 +359,8 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
         self.videoOutput.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)};
         [self.videoOutput setSampleBufferDelegate:self queue:self.videoQueue];
+        self.audioOutput = [AVCaptureAudioDataOutput new];
+        [self.audioOutput setSampleBufferDelegate:self queue:self.videoQueue];
         [self.session beginConfiguration];
         self.session.sessionPreset = AVCaptureSessionPresetPhoto;
         BOOL outputsOK = [self.session canAddOutput:self.photoOutput];
@@ -324,6 +387,38 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     self.peakingView.frame = self.previewView.bounds;
     if (self.preview.connection.isVideoOrientationSupported)
         self.preview.connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    [self updateReframeGuide];
+}
+
+- (void)updateReframeGuide {
+    if (self.captureMode.selectedSegmentIndex != 1) {
+        self.reframeGuideLayer.path = nil; return;
+    }
+    CGRect bounds = self.previewView.bounds;
+    CGFloat width = CGRectGetWidth(bounds), height = CGRectGetHeight(bounds);
+    if (width <= 0 || height <= 0) return;
+    // Preview is portrait while the master is a landscape 4:3 raster rotated
+    // for display. These guides show the centered crops produced on export.
+    CGFloat masterWidth = MIN(width, height * 3.0/4.0);
+    CGFloat masterHeight = masterWidth * 4.0/3.0;
+    if (masterHeight > height) { masterHeight = height; masterWidth = height * 3.0/4.0; }
+    CGRect master = CGRectMake((width-masterWidth)/2.0, (height-masterHeight)/2.0,
+        masterWidth, masterHeight);
+    UIBezierPath *path = [UIBezierPath bezierPath];
+    NSInteger mode = self.videoFormat.selectedSegmentIndex;
+    if (mode == 0 || mode == 2) {
+        CGFloat landscapeHeight = masterWidth * 9.0/16.0;
+        [path appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(CGRectGetMinX(master),
+            CGRectGetMidY(master)-landscapeHeight/2.0, masterWidth, landscapeHeight)]];
+    }
+    if (mode == 1 || mode == 2) {
+        CGFloat portraitWidth = masterHeight * 9.0/16.0;
+        [path appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(CGRectGetMidX(master)-portraitWidth/2.0,
+            CGRectGetMinY(master), portraitWidth, masterHeight)]];
+    }
+    self.reframeGuideLayer.frame = bounds;
+    self.reframeGuideLayer.strokeColor = UIColor.systemYellowColor.CGColor;
+    self.reframeGuideLayer.path = path.CGPath;
 }
 
 - (void)message:(NSString *)text {
@@ -341,7 +436,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.1.6";
+    self.captureTrace[@"version"] = @"0.2.0";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -368,7 +463,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 }
 
 - (void)updateSizeControl {
-    self.sizeButton.enabled = self.captureAvailable && !self.rawSwitch.on;
+    self.sizeButton.enabled = self.captureAvailable && !self.videoModeActive && !self.rawSwitch.on;
     NSString *title = self.rawSwitch.on ? @"Original do sensor" : @"Original";
     if (!self.rawSwitch.on) {
         double width = [self.limits[@"nativeWidth"] doubleValue], height = [self.limits[@"nativeHeight"] doubleValue];
@@ -420,6 +515,13 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     [self.session addInput:input]; self.input = input;
     [self.session commitConfiguration];
     self.controls = [[M7DeviceControls alloc] initWithDevice:device];
+    if (self.videoModeActive) {
+        [self.session beginConfiguration];
+        NSDictionary *videoFormat = [self.controls configureVideoFormatAtFPS:30 error:error];
+        [self.session commitConfiguration];
+        if (!videoFormat) return NO;
+        self.videoFormatDiagnostic = videoFormat;
+    } else self.videoFormatDiagnostic = nil;
     if ([device lockForConfiguration:error]) {
         device.videoZoomFactor = 1.0;
         [device unlockForConfiguration];
@@ -446,7 +548,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.1.6";
+    diagnostic[@"version"] = @"0.2.0";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -470,9 +572,126 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     return YES;
 }
 
+- (void)changeVideoFormat {
+    [self updateReframeGuide];
+    NSString *name = self.videoFormat.selectedSegmentIndex == 0 ? @"horizontal16x9" :
+        self.videoFormat.selectedSegmentIndex == 1 ? @"vertical9x16" : @"horizontalAndVertical";
+    dispatch_async(self.sessionQueue, ^{ [self recordSessionEvent:@"reframeSelection" details:@{@"mode":name}]; });
+}
+
+- (void)changeCaptureMode {
+    BOOL video = self.captureMode.selectedSegmentIndex == 1;
+    self.rawRow.hidden = video;
+    self.sizeRow.hidden = video;
+    self.videoFormatRow.hidden = !video;
+    [self updateReframeGuide];
+    [self enableControls:NO];
+    [self message:video ? @"Configurando vídeo 4:3 a 30 fps…" : @"Voltando ao modo de fotografia…"];
+    dispatch_async(self.sessionQueue, ^{ [self configureSessionForVideo:video]; });
+}
+
+// sessionQueue only. The same physical camera and manual controls are reused.
+- (void)configureSessionForVideo:(BOOL)video {
+    if (self.captureBusy || self.comparisonActive || self.videoRecording || self.videoProcessing || self.pendingPhoto || self.closing) {
+        [self message:@"Aguarde a operação atual antes de trocar o modo."];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL activeVideo = self.videoModeActive;
+            self.captureMode.selectedSegmentIndex = activeVideo ? 1 : 0;
+            self.rawRow.hidden = activeVideo; self.sizeRow.hidden = activeVideo;
+            self.videoFormatRow.hidden = !activeVideo; [self updateReframeGuide];
+        });
+        return;
+    }
+    if (video) {
+        AVAuthorizationStatus microphone = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+        NSString *usage = [NSBundle.mainBundle objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"];
+        BOOL mayRequest = microphone == AVAuthorizationStatusNotDetermined &&
+            [usage isKindOfClass:NSString.class] && usage.length > 0;
+        [self recordSessionEvent:@"microphoneAuthorization" details:@{@"status":@(microphone), @"mayRequest":@(mayRequest)}];
+        if (mayRequest) {
+            [self message:@"Aguardando permissão do microfone…"];
+            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(__unused BOOL granted) {
+                dispatch_async(self.sessionQueue, ^{ if (!self.closing) [self configureSessionForVideo:YES]; });
+            }];
+            return;
+        }
+    }
+    self.configured = NO;
+    [self.session stopRunning];
+    NSError *error = nil;
+    NSError *audioError = nil;
+    BOOL audioAdded = NO;
+    @try {
+        [self.session beginConfiguration];
+        if (video) {
+            self.videoModeActive = YES;
+            self.photoOnlyRequested = NO;
+            atomic_store(&M7PhotoOnlyPreferred, false);
+            if ([self.session.outputs containsObject:self.photoOutput]) [self.session removeOutput:self.photoOutput];
+            if (![self.session.outputs containsObject:self.videoOutput] && [self.session canAddOutput:self.videoOutput])
+                [self.session addOutput:self.videoOutput];
+            AVAuthorizationStatus microphone = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+            if (microphone == AVAuthorizationStatusAuthorized) {
+                AVCaptureDevice *audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+                AVCaptureDeviceInput *audioInput = audioDevice ? [AVCaptureDeviceInput deviceInputWithDevice:audioDevice error:&audioError] : nil;
+                if (audioInput && [self.session canAddInput:audioInput] && [self.session canAddOutput:self.audioOutput]) {
+                    [self.session addInput:audioInput]; self.audioInput = audioInput;
+                    [self.session addOutput:self.audioOutput]; audioAdded = YES;
+                }
+            }
+        } else {
+            self.videoModeActive = NO;
+            if (self.audioInput && [self.session.inputs containsObject:self.audioInput]) [self.session removeInput:self.audioInput];
+            if ([self.session.outputs containsObject:self.audioOutput]) [self.session removeOutput:self.audioOutput];
+            self.audioInput = nil;
+            if (![self.session.outputs containsObject:self.photoOutput] && [self.session canAddOutput:self.photoOutput])
+                [self.session addOutput:self.photoOutput];
+            if (!self.photoOnlyRequested && ![self.session.outputs containsObject:self.videoOutput] && [self.session canAddOutput:self.videoOutput])
+                [self.session addOutput:self.videoOutput];
+            self.session.sessionPreset = AVCaptureSessionPresetPhoto;
+        }
+        [self.session commitConfiguration];
+    } @catch (NSException *exception) {
+        @try { [self.session commitConfiguration]; } @catch (__unused NSException *ignored) {}
+        error = [self captureExceptionError:exception];
+    }
+    AVCaptureDeviceType type = self.lens.selectedSegmentIndex ? AVCaptureDeviceTypeBuiltInTelephotoCamera : AVCaptureDeviceTypeBuiltInWideAngleCamera;
+    BOOL selected = !error && [self selectDevice:type error:&error];
+    self.configured = selected;
+    if (selected) [self.session startRunning];
+    AVCaptureConnection *videoConnection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+    if (videoConnection.isVideoOrientationSupported) videoConnection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    [self recordSessionEvent:@"captureModeConfigured" details:@{@"video":@(video), @"audio":@(audioAdded),
+        @"success":@(selected), @"videoFormat":self.videoFormatDiagnostic ?: @{}, @"error":M7ErrorDetails(error),
+        @"audioError":M7ErrorDetails(audioError),
+        @"session":[self sessionDiagnostic]}];
+    if (!selected && video) {
+        self.videoModeActive = NO;
+        [self message:[NSString stringWithFormat:@"Falha ao configurar vídeo: %@. Restaurando Foto…",
+            error.localizedDescription ?: @"erro desconhecido"]];
+        [self configureSessionForVideo:NO];
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.captureMode.selectedSegmentIndex = selected && video ? 1 : 0;
+        self.rawRow.hidden = selected && video;
+        self.sizeRow.hidden = selected && video;
+        self.videoFormatRow.hidden = !(selected && video);
+        [self updateReframeGuide];
+        [self message:!selected ? error.localizedDescription ?: @"Falha ao configurar o modo." :
+            video ? (![self.videoFormatDiagnostic[@"fourThirds"] boolValue] ?
+                @"Vídeo pronto em formato alternativo; o relatório registra a geometria." :
+                (audioAdded ? @"Vídeo pronto: master 4:3 com áudio." : @"Vídeo pronto sem áudio; permissão ou entrada indisponível.")) :
+            @"Fotografia pronta."];
+    });
+}
+
 - (void)enableControls:(BOOL)ready {
     self.captureAvailable = ready;
-    self.lens.enabled = ready;
+    BOOL changingTopology = self.videoRecording || self.videoProcessing;
+    self.captureMode.enabled = ready && !changingTopology;
+    self.videoFormat.enabled = ready && self.videoModeActive && !changingTopology;
+    self.lens.enabled = ready && !changingTopology;
     self.exposureMode.enabled = ready; self.focusMode.enabled = ready;
     BOOL manual = ready && self.exposureMode.selectedSegmentIndex == 1 && [self.limits[@"manualExposure"] boolValue];
     self.isoSlider.enabled = manual;
@@ -480,6 +699,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     self.focusSlider.enabled = ready && self.focusMode.selectedSegmentIndex == 1 && [self.limits[@"manualFocus"] boolValue];
     self.evStepper.enabled = ready && self.exposureMode.selectedSegmentIndex == 0;
     self.shutterButton.enabled = ready;
+    self.rawSwitch.enabled = ready && !self.videoModeActive && [self.lensDiagnostic[@"rawFormats"] count] > 0;
     [self updateSizeControl];
 }
 
@@ -487,7 +707,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     if (self.closing) return;
     dispatch_async(self.sessionQueue, ^{
         AVCaptureDevice *d = self.input.device;
-        BOOL ready = self.configured && self.session.isRunning && !self.captureBusy;
+        BOOL ready = self.configured && self.session.isRunning && !self.captureBusy && !self.videoProcessing;
         BOOL pending = self.pendingPhoto != nil;
         BOOL importing = pending && [self.photosInFlight containsObject:self.pendingPhoto.filename];
         BOOL settled = !self.pendingExposure && !self.pendingFocus;
@@ -496,26 +716,47 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         NSString *readout = d ? [NSString stringWithFormat:@"ISO %.0f · %@ · f/%.1f\nEV %+.2f · Medidor %+.2f EV · Foco %.2f", d.ISO, shutter, d.lensAperture, d.exposureTargetBias, d.exposureTargetOffset, d.lensPosition] : @"Sem câmera ativa";
         dispatch_async(dispatch_get_main_queue(), ^{
             [self enableControls:ready && !pending];
-            self.shutterButton.enabled = pending ? !importing : ready && settled;
-            NSString *title = importing ? @"Salvando no Fotos…" : pending ? @"SALVAR FOTO PENDENTE" :
-                ready && !settled ? @"Aguardando foco/exposição…" : @"●  FOTOGRAFAR";
+            self.closeButton.enabled = !self.videoRecording && !self.videoProcessing && !self.captureBusy;
+            self.shutterButton.enabled = self.videoRecording ? YES : pending ? !importing : ready && settled;
+            NSString *title;
+            if (self.videoRecording) {
+                NSInteger elapsed = MAX(0, (NSInteger)(CACurrentMediaTime() - self.videoStartedAt));
+                title = [NSString stringWithFormat:@"■  PARAR · %02ld:%02ld", (long)(elapsed/60), (long)(elapsed%60)];
+            } else if (self.videoProcessing) title = @"Processando e salvando vídeo…";
+            else if (importing) title = @"Salvando no Fotos…";
+            else if (pending) title = @"SALVAR FOTO PENDENTE";
+            else if (ready && !settled) title = @"Aguardando foco/exposição…";
+            else title = self.videoModeActive ? @"●  GRAVAR VÍDEO" : @"●  FOTOGRAFAR";
             [self.shutterButton setTitle:title forState:UIControlStateNormal];
             self.readout.text = readout;
         });
     });
 }
 
+- (void)recordControlChange:(NSString *)control details:(NSDictionary *)details {
+    NSMutableDictionary *value = [details mutableCopy] ?: [NSMutableDictionary new];
+    value[@"control"] = control;
+    value[@"videoRecording"] = @(self.videoRecording);
+    [self recordSessionEvent:@"controlChange" details:value];
+    if (self.videoRecording || self.videoProcessing) [self recordVideoStage:@"controlChange" details:value];
+}
+
 - (void)changeLens {
     AVCaptureDeviceType type = self.lens.selectedSegmentIndex ? AVCaptureDeviceTypeBuiltInTelephotoCamera : AVCaptureDeviceTypeBuiltInWideAngleCamera;
     [self enableControls:NO]; self.peakingView.image = nil;
     dispatch_async(self.sessionQueue, ^{
-        if (self.captureBusy || self.closing) return;
+        if (self.captureBusy || self.videoRecording || self.videoProcessing || self.closing) return;
         NSError *error = nil;
         if (![self selectDevice:type error:&error]) {
+            [self recordControlChange:@"lens" details:@{@"requested":type ?: @"", @"success":@NO,
+                @"error":M7ErrorDetails(error)}];
             [self message:error.localizedDescription];
             BOOL tele = [self.input.device.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInTelephotoCamera];
             dispatch_async(dispatch_get_main_queue(), ^{ self.lens.selectedSegmentIndex = tele ? 1 : 0; });
-        } else [self message:@"Lente alterada; exposição e foco voltaram para AUTO."];
+        } else {
+            [self recordControlChange:@"lens" details:@{@"requested":type ?: @"", @"success":@YES}];
+            [self message:@"Lente alterada; exposição e foco voltaram para AUTO."];
+        }
     });
 }
 
@@ -543,6 +784,8 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         NSError *error = nil;
         ++self.exposureRevision; self.pendingExposure = NO;
         BOOL ok = mode == 0 ? [self.controls enableAutoExposure:&error] : [self.controls lockExposure:&error];
+        [self recordControlChange:@"exposureMode" details:@{@"mode":@(mode), @"success":@(ok),
+            @"error":M7ErrorDetails(error)}];
         if (!ok) [self message:error.localizedDescription];
     });
 }
@@ -555,12 +798,22 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         NSError *error = nil;
         NSUInteger revision = ++self.exposureRevision;
         self.pendingExposure = YES;
+        [self recordControlChange:@"manualExposureRequested" details:@{@"ISO":@(iso), @"shutterIndex":@(index),
+            @"seconds":@(m7_shutter_seconds(index)), @"revision":@(revision)}];
         __weak typeof(self) weakSelf = self;
         BOOL ok = [self.controls setISO:(float)iso shutterIndex:index completion:^(__unused CMTime time) {
             typeof(self) owner = weakSelf; if (!owner) return;
-            dispatch_async(owner.sessionQueue, ^{ if (owner.exposureRevision == revision) owner.pendingExposure = NO; });
+            dispatch_async(owner.sessionQueue, ^{
+                if (owner.exposureRevision == revision) owner.pendingExposure = NO;
+                [owner recordControlChange:@"manualExposureApplied" details:@{@"revision":@(revision),
+                    @"ISO":@(owner.input.device.ISO), @"seconds":@(CMTimeGetSeconds(owner.input.device.exposureDuration))}];
+            });
         } error:&error];
-        if (!ok) { self.pendingExposure = NO; [self message:error.localizedDescription]; }
+        if (!ok) {
+            self.pendingExposure = NO;
+            [self recordControlChange:@"manualExposureFailed" details:@{@"revision":@(revision), @"error":M7ErrorDetails(error)}];
+            [self message:error.localizedDescription];
+        }
     });
 }
 
@@ -581,6 +834,8 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         NSError *error = nil;
         ++self.focusRevision; self.pendingFocus = NO;
         BOOL ok = mode == 0 ? [self.controls enableAutoFocus:&error] : [self.controls lockFocus:&error];
+        [self recordControlChange:@"focusMode" details:@{@"mode":@(mode), @"success":@(ok),
+            @"error":M7ErrorDetails(error)}];
         if (!ok) [self message:error.localizedDescription];
     });
 }
@@ -594,12 +849,21 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         if (!self.configured || self.captureBusy || self.closing) return;
         NSError *error = nil;
         NSUInteger revision = ++self.focusRevision; self.pendingFocus = YES;
+        [self recordControlChange:@"manualFocusRequested" details:@{@"position":@(position), @"revision":@(revision)}];
         __weak typeof(self) weakSelf = self;
         BOOL ok = [self.controls setManualFocus:position completion:^(__unused CMTime time) {
             typeof(self) owner = weakSelf; if (!owner) return;
-            dispatch_async(owner.sessionQueue, ^{ if (owner.focusRevision == revision) owner.pendingFocus = NO; });
+            dispatch_async(owner.sessionQueue, ^{
+                if (owner.focusRevision == revision) owner.pendingFocus = NO;
+                [owner recordControlChange:@"manualFocusApplied" details:@{@"position":@(owner.input.device.lensPosition),
+                    @"revision":@(revision)}];
+            });
         } error:&error];
-        if (!ok) { self.pendingFocus = NO; [self message:error.localizedDescription]; }
+        if (!ok) {
+            self.pendingFocus = NO;
+            [self recordControlChange:@"manualFocusFailed" details:@{@"revision":@(revision), @"error":M7ErrorDetails(error)}];
+            [self message:error.localizedDescription];
+        }
     });
 }
 
@@ -609,13 +873,19 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         if (self.captureBusy || self.closing) return;
         NSError *error = nil;
         NSUInteger revision = ++self.exposureRevision; self.pendingExposure = YES;
+        [self recordControlChange:@"evRequested" details:@{@"thirds":@(thirds), @"revision":@(revision)}];
         __weak typeof(self) weakSelf = self;
         BOOL ok = [self.controls setExposureBiasThirds:thirds completion:^(__unused CMTime time) {
             typeof(self) owner = weakSelf; if (!owner) return;
-            dispatch_async(owner.sessionQueue, ^{ if (owner.exposureRevision == revision) owner.pendingExposure = NO; });
+            dispatch_async(owner.sessionQueue, ^{
+                if (owner.exposureRevision == revision) owner.pendingExposure = NO;
+                [owner recordControlChange:@"evApplied" details:@{@"bias":@(owner.input.device.exposureTargetBias),
+                    @"revision":@(revision)}];
+            });
         } error:&error];
         if (!ok) {
             self.pendingExposure = NO;
+            [self recordControlChange:@"evFailed" details:@{@"revision":@(revision), @"error":M7ErrorDetails(error)}];
             [self message:error.localizedDescription ?: @"Câmera ainda não está pronta."];
         }
     });
@@ -625,9 +895,272 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     self.peakingEnabled = self.peakingSwitch.on;
     self.peakingThreshold = self.thresholdSlider.value;
     if (!self.peakingEnabled) self.peakingView.image = nil;
+    BOOL enabled = self.peakingEnabled;
+    double threshold = self.peakingThreshold;
+    dispatch_async(self.sessionQueue, ^{ [self recordControlChange:@"peaking" details:@{@"enabled":@(enabled), @"threshold":@(threshold)}]; });
+}
+
+// sessionQueue only. The in-memory report remains available when Camera cannot
+// write Documents/Application Support; a best-effort JSON mirrors photo logs.
+- (void)recordVideoStage:(NSString *)stage details:(NSDictionary *)details {
+    if (!self.videoTrace) self.videoTrace = [NSMutableDictionary new];
+    NSMutableArray *events = self.videoTrace[@"events"];
+    if (!events) { events = [NSMutableArray new]; self.videoTrace[@"events"] = events; }
+    [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
+        @"details":M7JSONSnapshot(details ?: @{})}];
+    if (events.count > 80) [events removeObjectAtIndex:0];
+    self.videoTrace[@"version"] = @"0.2.0";
+    self.videoTrace[@"controllerID"] = self.controllerID;
+    self.videoTrace[@"sessionID"] = self.sessionID;
+    self.videoTrace[@"processID"] = @(getpid());
+    self.videoTrace[@"updatedAt"] = @(NSDate.date.timeIntervalSince1970);
+    NSError *writeError = nil;
+    [self.storage writeJSON:self.videoTrace filename:@"ultimo-video.json" error:&writeError];
+    if (writeError) self.videoTrace[@"diagnosticWriteError"] = writeError.localizedDescription;
+}
+
+- (NSURL *)videoWorkingDirectoryWithError:(NSError **)error {
+    NSString *temporary = NSTemporaryDirectory();
+    if (!temporary.length) {
+        if (error) *error = [NSError errorWithDomain:@"Manual7.Video" code:1
+            userInfo:@{NSLocalizedDescriptionKey:@"O processo Câmera não forneceu pasta temporária."}];
+        return nil;
+    }
+    NSURL *directory = [[NSURL fileURLWithPath:temporary isDirectory:YES]
+        URLByAppendingPathComponent:@"Manual7-Video" isDirectory:YES];
+    if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES
+        attributes:nil error:error]) return nil;
+    NSURL *probe = [directory URLByAppendingPathComponent:[NSString stringWithFormat:@".probe-%@", NSUUID.UUID.UUIDString]];
+    NSData *data = [@"M7" dataUsingEncoding:NSUTF8StringEncoding];
+    if (![data writeToURL:probe options:NSDataWritingAtomic error:error]) return nil;
+    [NSFileManager.defaultManager removeItemAtURL:probe error:nil];
+    return directory;
+}
+
+- (void)beginVideoBackgroundTask {
+    if (self.videoBackgroundTask != UIBackgroundTaskInvalid) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.videoBackgroundTask != UIBackgroundTaskInvalid) return;
+        self.videoBackgroundTask = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"Manual7 Video"
+            expirationHandler:^{
+                dispatch_async(self.sessionQueue, ^{
+                    [self recordVideoStage:@"backgroundTimeExpired" details:@{}];
+                    [self endVideoBackgroundTask];
+                });
+            }];
+    });
+}
+
+- (void)endVideoBackgroundTask {
+    UIBackgroundTaskIdentifier identifier = self.videoBackgroundTask;
+    if (identifier == UIBackgroundTaskInvalid) return;
+    self.videoBackgroundTask = UIBackgroundTaskInvalid;
+    dispatch_async(dispatch_get_main_queue(), ^{ [UIApplication.sharedApplication endBackgroundTask:identifier]; });
+}
+
+- (void)startVideoRecordingWithOutputMode:(NSInteger)outputMode {
+    if (!self.videoModeActive || !self.configured || !self.session.isRunning || self.captureBusy ||
+        self.videoProcessing || self.pendingExposure || self.pendingFocus || self.closing) {
+        [self message:@"Vídeo indisponível; aguarde a configuração, foco e exposição."]; return;
+    }
+    NSError *error = nil;
+    NSURL *directory = [self videoWorkingDirectoryWithError:&error];
+    NSString *identifier = NSUUID.UUID.UUIDString;
+    self.videoTrace = [@{@"id":identifier, @"outputMode":@(outputMode),
+        @"requestedOutputs":outputMode == 0 ? @[@"horizontal16x9"] :
+            outputMode == 1 ? @[@"vertical9x16"] : @[@"horizontal16x9", @"vertical9x16"],
+        @"startedAt":@(NSDate.date.timeIntervalSince1970)} mutableCopy];
+    [self recordVideoStage:@"requested" details:@{@"outputMode":@(outputMode),
+        @"session":[self sessionDiagnostic], @"videoFormat":self.videoFormatDiagnostic ?: @{},
+        @"microphoneAuthorization":@([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio])}];
+    if (!directory) {
+        [self recordVideoStage:@"temporaryDirectoryFailed" details:M7ErrorDetails(error)];
+        [self message:error.localizedDescription ?: @"Pasta temporária de vídeo indisponível."]; return;
+    }
+    NSNumber *availableBytes = nil;
+    [directory getResourceValue:&availableBytes forKey:NSURLVolumeAvailableCapacityForImportantUsageKey error:nil];
+    [self recordVideoStage:@"temporaryDirectoryReady" details:@{@"path":directory.path ?: @"",
+        @"availableBytes":availableBytes ?: @0}];
+    NSURL *master = [directory URLByAppendingPathComponent:[NSString stringWithFormat:@"M7-master-%@.mov", identifier]];
+    M7VideoRecorder *recorder = [[M7VideoRecorder alloc] initWithOutputURL:master];
+    dispatch_sync(self.videoQueue, ^{ self.videoRecorder = recorder; });
+    self.videoMasterURL = master;
+    self.activeVideoOutputMode = outputMode;
+    self.videoSavedCount = 0;
+    self.videoFailedCount = 0;
+    self.videoExportFailureCount = 0;
+    self.videoStartedAt = CACurrentMediaTime();
+    self.videoRecording = YES;
+    self.videoProcessing = NO;
+    [self beginVideoBackgroundTask];
+    [self recordVideoStage:@"waitingForFirstFrame" details:@{@"masterPath":master.path ?: @""}];
+    [self message:@"Gravando master 4:3… controles manuais permanecem ativos."];
+}
+
+- (void)stopVideoRecordingReason:(NSString *)reason error:(NSError *)initialError {
+    if (!self.videoRecording) return;
+    self.videoRecording = NO;
+    self.videoProcessing = YES;
+    [self recordVideoStage:@"stopRequested" details:@{@"reason":reason ?: @"user",
+        @"initialError":M7ErrorDetails(initialError)}];
+    [self message:@"Finalizando o master…"];
+    M7VideoRecorder *recorder = self.videoRecorder;
+    dispatch_async(self.videoQueue, ^{
+        [recorder finishWithCompletion:^(NSURL *url, NSDictionary *summary, NSError *finishError) {
+            dispatch_async(self.sessionQueue, ^{
+                self.videoRecorder = nil;
+                NSError *error = initialError ?: finishError;
+                [self recordVideoStage:@"masterFinished" details:@{@"recorder":summary ?: @{},
+                    @"file":M7VideoFileDetails(url), @"error":M7ErrorDetails(error)}];
+                if (error) {
+                    self.videoProcessing = NO;
+                    ++self.videoFailedCount;
+                    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+                    [self endVideoBackgroundTask];
+                    [self message:[NSString stringWithFormat:@"Falha na gravação: %@", error.localizedDescription]];
+                    return;
+                }
+                self.videoMasterURL = url;
+                self.videoFramesToExport = self.activeVideoOutputMode == 0 ? @[@(M7VideoFrameHorizontal)] :
+                    self.activeVideoOutputMode == 1 ? @[@(M7VideoFrameVertical)] :
+                    @[@(M7VideoFrameHorizontal), @(M7VideoFrameVertical)];
+                self.videoExportIndex = 0; self.videoSavedCount = 0; self.videoFailedCount = 0;
+                [self processNextVideoFrame];
+            });
+        }];
+    });
+}
+
+- (void)saveVideoURLToPhotos:(NSURL *)url label:(NSString *)label mayRequest:(BOOL)mayRequest
+    completion:(void (^)(BOOL success, NSString *assetID, NSError *error))completion {
+    PHAuthorizationStatus add = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
+    PHAuthorizationStatus read = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+    NSString *usage = [NSBundle.mainBundle objectForInfoDictionaryKey:@"NSPhotoLibraryAddUsageDescription"];
+    BOOL authorized = add == PHAuthorizationStatusAuthorized || read == PHAuthorizationStatusAuthorized || read == PHAuthorizationStatusLimited;
+    [self recordVideoStage:@"photosAuthorization" details:@{@"label":label, @"addOnly":@(add),
+        @"readWrite":@(read), @"hasUsageDescription":@([usage isKindOfClass:NSString.class] && usage.length > 0)}];
+    if (!authorized && add == PHAuthorizationStatusNotDetermined && mayRequest && usage.length) {
+        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(__unused PHAuthorizationStatus status) {
+            dispatch_async(self.sessionQueue, ^{ [self saveVideoURLToPhotos:url label:label mayRequest:NO completion:completion]; });
+        }];
+        return;
+    }
+    if (!authorized) {
+        completion(NO, @"", [NSError errorWithDomain:@"Manual7.VideoPhotos" code:1
+            userInfo:@{NSLocalizedDescriptionKey:@"O Fotos não autorizou a inclusão do vídeo."}]);
+        return;
+    }
+    __block NSString *assetID = nil;
+    [PHPhotoLibrary.sharedPhotoLibrary performChanges:^{
+        PHAssetCreationRequest *request = [PHAssetCreationRequest creationRequestForAsset];
+        PHAssetResourceCreationOptions *options = [PHAssetResourceCreationOptions new];
+        options.originalFilename = url.lastPathComponent;
+        options.shouldMoveFile = NO;
+        [request addResourceWithType:PHAssetResourceTypeVideo fileURL:url options:options];
+        assetID = request.placeholderForCreatedAsset.localIdentifier;
+    } completionHandler:^(BOOL success, NSError *error) {
+        dispatch_async(self.sessionQueue, ^{
+            BOOL confirmed = success && assetID.length > 0;
+            NSError *resultError = confirmed ? nil : error ?: [NSError errorWithDomain:@"Manual7.VideoPhotos" code:2
+                userInfo:@{NSLocalizedDescriptionKey:@"O Fotos não confirmou um identificador para o vídeo."}];
+            completion(confirmed, assetID ?: @"", resultError);
+        });
+    }];
+}
+
+- (void)processNextVideoFrame {
+    if (self.videoExportIndex >= self.videoFramesToExport.count) {
+        if (self.videoExportFailureCount && [NSFileManager.defaultManager fileExistsAtPath:self.videoMasterURL.path]) {
+            [self.pendingVideos addObject:@{@"url":self.videoMasterURL, @"label":@"master4x3"}];
+            [self recordVideoStage:@"masterRetainedAfterExportFailure" details:M7VideoFileDetails(self.videoMasterURL)];
+        } else [NSFileManager.defaultManager removeItemAtURL:self.videoMasterURL error:nil];
+        [self recordVideoStage:@"completed" details:@{@"saved":@(self.videoSavedCount),
+            @"failed":@(self.videoFailedCount), @"pending":@(self.pendingVideos.count)}];
+        self.videoProcessing = NO;
+        [self endVideoBackgroundTask];
+        NSString *message = self.videoSavedCount ? [NSString stringWithFormat:@"%lu vídeo(s) salvo(s) no Fotos%@.",
+            (unsigned long)self.videoSavedCount, self.videoFailedCount ? @"; houve falhas registradas" : @""] :
+            @"Nenhum vídeo foi salvo; consulte Exportar → Ver diagnóstico.";
+        [self message:message];
+        return;
+    }
+    M7VideoFrame frame = (M7VideoFrame)self.videoFramesToExport[self.videoExportIndex].integerValue;
+    NSString *label = frame == M7VideoFrameVertical ? @"vertical9x16" : @"horizontal16x9";
+    NSURL *directory = self.videoMasterURL.URLByDeletingLastPathComponent;
+    NSURL *output = [directory URLByAppendingPathComponent:[NSString stringWithFormat:@"M7-%@-%@.mp4", label, self.videoTrace[@"id"] ?: NSUUID.UUID.UUIDString]];
+    [self recordVideoStage:@"exportStarted" details:@{@"label":label, @"source":M7VideoFileDetails(self.videoMasterURL),
+        @"outputPath":output.path ?: @""}];
+    [self message:[NSString stringWithFormat:@"Gerando %@…", label]];
+    M7ExportVideoFrame(self.videoMasterURL, output, frame, ^(NSDictionary *details, NSError *error) {
+        dispatch_async(self.sessionQueue, ^{
+            [self recordVideoStage:@"exportFinished" details:@{@"label":label, @"result":details ?: @{},
+                @"error":M7ErrorDetails(error)}];
+            if (error) {
+                ++self.videoFailedCount; ++self.videoExportFailureCount; ++self.videoExportIndex;
+                [NSFileManager.defaultManager removeItemAtURL:output error:nil];
+                [self processNextVideoFrame]; return;
+            }
+            [self saveVideoURLToPhotos:output label:label mayRequest:YES completion:^(BOOL success, NSString *assetID, NSError *saveError) {
+                [self recordVideoStage:@"photosResult" details:@{@"label":label, @"success":@(success),
+                    @"assetID":assetID ?: @"", @"file":M7VideoFileDetails(output), @"error":M7ErrorDetails(saveError)}];
+                if (success) {
+                    ++self.videoSavedCount;
+                    [NSFileManager.defaultManager removeItemAtURL:output error:nil];
+                } else {
+                    ++self.videoFailedCount;
+                    [self.pendingVideos addObject:@{@"url":output, @"label":label}];
+                }
+                ++self.videoExportIndex;
+                [self processNextVideoFrame];
+            }];
+        });
+    });
+}
+
+- (void)retryPendingVideoItems:(NSArray<NSDictionary *> *)items index:(NSUInteger)index saved:(NSUInteger)saved {
+    if (index >= items.count) {
+        self.videoProcessing = NO;
+        [self endVideoBackgroundTask];
+        [self message:[NSString stringWithFormat:@"%lu vídeo(s) recuperado(s); %lu ainda pendente(s).",
+            (unsigned long)saved, (unsigned long)self.pendingVideos.count]];
+        return;
+    }
+    NSDictionary *item = items[index];
+    NSURL *url = item[@"url"];
+    NSString *label = item[@"label"] ?: @"video";
+    if (!url || ![NSFileManager.defaultManager fileExistsAtPath:url.path]) {
+        [self.pendingVideos removeObject:item];
+        [self recordVideoStage:@"pendingVideoMissing" details:@{@"label":label, @"path":url.path ?: @""}];
+        [self retryPendingVideoItems:items index:index+1 saved:saved];
+        return;
+    }
+    [self saveVideoURLToPhotos:url label:label mayRequest:YES completion:^(BOOL success, NSString *assetID, NSError *error) {
+        [self recordVideoStage:@"pendingVideoRetry" details:@{@"label":label, @"success":@(success),
+            @"assetID":assetID ?: @"", @"error":M7ErrorDetails(error)}];
+        if (success) {
+            [self.pendingVideos removeObject:item];
+            [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+        }
+        [self retryPendingVideoItems:items index:index+1 saved:saved + (success ? 1 : 0)];
+    }];
+}
+
+- (void)retryPendingVideos {
+    if (self.videoRecording || self.videoProcessing || !self.pendingVideos.count) return;
+    self.videoProcessing = YES;
+    [self beginVideoBackgroundTask];
+    [self retryPendingVideoItems:[self.pendingVideos copy] index:0 saved:0];
 }
 
 - (void)capture {
+    NSInteger mode = self.videoFormat.selectedSegmentIndex;
+    if (self.videoModeActive) {
+        dispatch_async(self.sessionQueue, ^{
+            if (self.videoRecording) [self stopVideoRecordingReason:@"user" error:nil];
+            else [self startVideoRecordingWithOutputMode:mode];
+        });
+        return;
+    }
     BOOL raw = self.rawSwitch.on;
     NSUInteger longEdge = raw ? 0 : self.jpegLongEdge;
     dispatch_async(self.sessionQueue, ^{
@@ -958,7 +1491,10 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     return @{@"controllerID":self.controllerID, @"sessionID":self.sessionID, @"processID":@(getpid()),
         @"photoOnlyRequested":@(self.photoOnlyRequested), @"photoOnlyObserved":@([self isPhotoOnlySession]),
         @"comparisonID":self.comparisonReport[@"id"] ?: @"", @"comparisonActive":@(self.comparisonActive), @"configured":@(self.configured), @"running":@(self.session.isRunning),
-        @"captureBusy":@(self.captureBusy), @"pendingExposure":@(self.pendingExposure),
+        @"captureBusy":@(self.captureBusy), @"videoMode":@(self.videoModeActive),
+        @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
+        @"audioAttached":@([self.session.outputs containsObject:self.audioOutput]),
+        @"pendingExposure":@(self.pendingExposure),
         @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID),
         @"outputs":outputs, @"preset":self.session.sessionPreset ?: @"", @"interrupted":@(self.session.isInterrupted),
         @"formatWidth":@(formatSize.width), @"formatHeight":@(formatSize.height),
@@ -982,8 +1518,17 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         [comparison removeObjectForKey:@"capture"];
         comparison[@"captureReport"] = @"lastCapture";
     }
+    __block NSDictionary *writer = @{};
+    dispatch_sync(self.videoQueue, ^{ writer = self.videoRecorder ? [self.videoRecorder snapshot] : @{}; });
+    NSMutableArray *pendingVideoDetails = [NSMutableArray new];
+    for (NSDictionary *item in self.pendingVideos) {
+        NSURL *url = item[@"url"];
+        [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
+    }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.1.6", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.2.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
+        @"pendingVideos":pendingVideoDetails,
         @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
         @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
         @"lastCapture":self.captureTrace ?: @{@"message":@"Nenhuma tentativa registrada nesta instalação."},
@@ -1004,7 +1549,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"rawJPEGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.1.6", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.2.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -1043,6 +1588,8 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         NSError *error = nil;
         NSArray<NSURL *> *files = [self.storage imageFilesWithError:&error];
         BOOL pending = self.pendingPhoto != nil;
+        BOOL pendingVideo = self.pendingVideos.count > 0;
+        BOOL videoMode = self.videoModeActive;
         BOOL hasVideoOutput = [self.session.outputs containsObject:self.videoOutput];
         BOOL canRestore = self.photoOnlyRequested || !hasVideoOutput;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1050,9 +1597,9 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.1.6" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.2.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
-            [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
+            if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
             [menu addAction:[UIAlertAction actionWithTitle:@"Último teste RAW + JPEG" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) {
@@ -1061,7 +1608,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
                     if (report) [self presentDiagnostic:report];
                     else [self message:@"Nenhum teste concluído neste processo da Câmera."];
                 }]];
-            if (canRestore) [menu addAction:[UIAlertAction actionWithTitle:@"Restaurar saída de peaking" style:UIAlertActionStyleDefault
+            if (!videoMode && canRestore) [menu addAction:[UIAlertAction actionWithTitle:@"Restaurar saída de peaking" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) {
                     dispatch_async(self.sessionQueue, ^{
                         if (self.captureBusy || self.pendingPhoto || self.comparisonActive || self.closing) {
@@ -1073,6 +1620,8 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
             if (pending) [menu addAction:[UIAlertAction actionWithTitle:@"Salvar foto pendente no Fotos" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 dispatch_async(self.sessionQueue, ^{ if (self.pendingPhoto) [self savePhotoToPhotos:self.pendingPhoto]; });
             }]];
+            if (pendingVideo) [menu addAction:[UIAlertAction actionWithTitle:@"Tentar salvar vídeos pendentes" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) { dispatch_async(self.sessionQueue, ^{ [self retryPendingVideos]; }); }]];
             NSDateFormatter *formatter = [NSDateFormatter new];
             formatter.dateStyle = NSDateFormatterShortStyle; formatter.timeStyle = NSDateFormatterMediumStyle;
             for (NSURL *file in [files subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)12, files.count))]) {
@@ -1094,12 +1643,13 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 - (void)recordSessionEvent:(NSString *)event details:(NSDictionary *)details {
     [self.sessionEvents addObject:@{@"event":event, @"time":@(NSDate.date.timeIntervalSince1970),
         @"sessionID":self.sessionID, @"details":M7JSONSnapshot(details)}];
-    if (self.sessionEvents.count > 8) [self.sessionEvents removeObjectAtIndex:0];
+    if (self.sessionEvents.count > 32) [self.sessionEvents removeObjectAtIndex:0];
 }
 
 // Does not toggle. Repeating the same requested mode is idempotent.
 - (BOOL)configurePeakingOutput:(BOOL)attached {
-    if (!self.configured || !self.input || !self.videoOutput || self.captureBusy || self.pendingPhoto || self.closing) {
+    if (self.videoModeActive || !self.configured || !self.input || !self.videoOutput || self.captureBusy ||
+        self.videoRecording || self.videoProcessing || self.pendingPhoto || self.closing) {
         [self recordSessionEvent:@"configurationRejected" details:[self sessionDiagnostic]];
         [self message:@"A sessão não está livre para reconfigurar. Consulte o diagnóstico."]; return NO;
     }
@@ -1139,6 +1689,9 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
 
 - (void)runRAWComparison {
     dispatch_async(self.sessionQueue, ^{
+        if (self.videoModeActive || self.videoRecording || self.videoProcessing) {
+            [self message:@"O teste RAW requer o modo Foto."]; return;
+        }
         if (self.comparisonActive || self.captureBusy || self.pendingPhoto || self.closing) {
             [self message:@"Já existe uma captura ou foto pendente. Conclua-a antes do teste."]; return;
         }
@@ -1186,8 +1739,16 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     [self presentExportController:sheet];
 }
 
-- (void)captureOutput:(__unused AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sample fromConnection:(__unused AVCaptureConnection *)connection {
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sample fromConnection:(__unused AVCaptureConnection *)connection {
     @autoreleasepool {
+        AVMediaType mediaType = output == self.audioOutput ? AVMediaTypeAudio : AVMediaTypeVideo;
+        if (self.videoRecording && self.videoRecorder) {
+            NSError *writerError = [self.videoRecorder appendSampleBuffer:sample mediaType:mediaType];
+            if (writerError) {
+                dispatch_async(self.sessionQueue, ^{ [self stopVideoRecordingReason:@"writerFailure" error:writerError]; });
+            }
+        }
+        if (output != self.videoOutput) return;
         CFTimeInterval now = CACurrentMediaTime();
         if (!self.peakingEnabled || self.overlayPending || now - self.lastPeakingTime < .1) return;
         self.lastPeakingTime = now;
@@ -1227,12 +1788,22 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     }
 }
 
+- (void)captureOutput:(AVCaptureOutput *)output didDropSampleBuffer:(__unused CMSampleBufferRef)sample
+    fromConnection:(__unused AVCaptureConnection *)connection {
+    if (output == self.videoOutput && self.videoRecording && self.videoRecorder)
+        [self.videoRecorder noteDroppedVideoSample];
+}
+
 - (void)notification:(NSNotification *)note {
     if ([note.name hasPrefix:@"AVCaptureSession"] && note.object != self.session) return;
     if (self.closing) return;
     if ([note.name isEqualToString:UIApplicationWillResignActiveNotification]) {
         self.peakingView.image = nil;
-        dispatch_async(self.sessionQueue, ^{ [self.session stopRunning]; });
+        dispatch_async(self.sessionQueue, ^{
+            if (self.videoRecording) [self stopVideoRecordingReason:@"applicationBackground" error:nil];
+            [self.session stopRunning];
+            [self recordSessionEvent:@"applicationBackground" details:[self sessionDiagnostic]];
+        });
     } else if ([note.name isEqualToString:UIApplicationDidBecomeActiveNotification] ||
                [note.name isEqualToString:AVCaptureSessionInterruptionEndedNotification]) {
         dispatch_async(self.sessionQueue, ^{
@@ -1247,6 +1818,7 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         [self message:[NSString stringWithFormat:@"Câmera: %@. Feche e reabra M7.", error.localizedDescription ?: @"erro de sessão"]];
         dispatch_async(self.sessionQueue, ^{
             [self recordSessionEvent:@"sessionError" details:M7ErrorDetails(error)];
+            if (self.videoRecording) [self stopVideoRecordingReason:@"sessionError" error:error];
             [self completeComparison:@"sessionError"];
             self.configured = NO; self.captureBusy = NO;
             self.pendingExposure = NO; self.pendingFocus = NO;
@@ -1255,6 +1827,10 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         });
     } else if ([note.name isEqualToString:AVCaptureSessionWasInterruptedNotification]) {
         [self message:@"Câmera interrompida; aguardando disponibilidade."];
+        dispatch_async(self.sessionQueue, ^{
+            [self recordSessionEvent:@"sessionInterrupted" details:note.userInfo ?: @{}];
+            if (self.videoRecording) [self stopVideoRecordingReason:@"sessionInterrupted" error:nil];
+        });
     }
 }
 
@@ -1262,8 +1838,44 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
     if (self.closing) return;
     self.closeButton.enabled = NO;
     dispatch_async(self.sessionQueue, ^{
+        if (self.videoRecording) {
+            [self stopVideoRecordingReason:@"closeRequested" error:nil];
+            [self message:@"A gravação foi encerrada; aguarde o processamento antes de fechar."];
+            dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = NO; });
+            return;
+        }
+        if (self.videoProcessing) {
+            [self message:@"Aguarde a exportação e a confirmação do Fotos."];
+            return;
+        }
         if (self.captureBusy) {
             dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; });
+            return;
+        }
+        if (self.pendingVideos.count) {
+            NSArray *pending = [self.pendingVideos copy];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.closeButton.enabled = YES;
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Vídeos ainda não salvos"
+                    message:@"Há vídeos apenas na pasta temporária. Tente salvá-los no Fotos antes de fechar."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Continuar no M7" style:UIAlertActionStyleCancel handler:nil]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Tentar salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                    dispatch_async(self.sessionQueue, ^{ [self retryPendingVideos]; });
+                }]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Descartar vídeos e fechar" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+                    dispatch_async(self.sessionQueue, ^{
+                        for (NSDictionary *item in pending) {
+                            NSURL *url = item[@"url"];
+                            if (url) [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+                        }
+                        [self.pendingVideos removeObjectsInArray:pending];
+                        [self recordVideoStage:@"pendingVideosDiscarded" details:@{@"count":@(pending.count)}];
+                        dispatch_async(dispatch_get_main_queue(), ^{ [self close]; });
+                    });
+                }]];
+                [self presentExportController:alert];
+            });
             return;
         }
         if (self.pendingPhoto && !self.pendingPhoto.file && self.pendingPhoto.data.length) {
@@ -1297,6 +1909,8 @@ static NSDictionary *M7JSONSnapshot(NSDictionary *value) {
         self.closing = YES;
         [self.session stopRunning];
         [self.videoOutput setSampleBufferDelegate:nil queue:NULL];
+        [self.audioOutput setSampleBufferDelegate:nil queue:NULL];
+        [self endVideoBackgroundTask];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.timer invalidate]; self.peakingEnabled = NO;
             [self dismissViewControllerAnimated:YES completion:^{

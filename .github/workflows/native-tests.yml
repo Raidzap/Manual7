@@ -26,5 +26,7 @@ jobs:
         run: bash tests/run_video_recorder_native.sh
       - name: Subject tracker state
         run: bash tests/run_subject_tracker_native.sh
+      - name: Remote control server
+        run: bash tests/run_remote_server_native.sh
       - name: Core math
         run: python3 -m unittest discover -s tests -v

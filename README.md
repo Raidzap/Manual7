@@ -1,8 +1,16 @@
-# Manual7 — 0.3.0 experimental
+# Manual7 — 0.4.0 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. O teste da 0.1.5 confirmou que RAW ainda falha com AVFoundation −11800 / OSStatus −12780 mesmo com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. Remover a saída de peaking não resolveu. A 0.1.6 acrescentou uma captura alternativa RAW + JPEG; esse teste ainda não foi executado no aparelho. A 0.2.0 acrescentou gravação de vídeo e Reframe. A 0.3.0 acrescenta rastreamento automático para o Reframe. **Vídeo, Reframe e rastreamento ainda precisam de validação física no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. O teste da 0.1.5 confirmou que RAW ainda falha com AVFoundation −11800 / OSStatus −12780 mesmo com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. Remover a saída de peaking não resolveu. A 0.1.6 acrescentou uma captura alternativa RAW + JPEG; esse teste ainda não foi executado no aparelho. A 0.2.0 acrescentou gravação de vídeo e Reframe, a 0.3.0 acrescentou rastreamento automático e a 0.4.0 acrescenta controle remoto por Linux. **Vídeo, Reframe, rastreamento e controle remoto ainda precisam de validação física no iPhone.**
+
+## Controle remoto na 0.4.0
+
+O M7 mostra uma linha **Remoto** com porta e PIN. Um servidor HTTP/JSON escuta somente em `127.0.0.1:17837` no iPhone; o notebook Linux acessa essa porta por um túnel SSH. O PIN de seis dígitos é renovado quando um novo painel M7 é aberto e é exigido em todas as rotas de estado, diagnóstico e comando. O servidor para em segundo plano e ao fechar o painel.
+
+O cliente `tools/manual7_remote.py`, feito apenas com a biblioteca padrão do Python, consulta estado, copia diagnóstico, fotografa, inicia/para vídeo, repete salvamentos pendentes e altera modo, lente, exposição, ISO, shutter, EV, foco, RAW, tamanho JPEG, Reframe, tracking e peaking. Cada requisição aceita, recusada ou malformada é contabilizada; comandos e resultados aparecem em `remoteEvents`, e comandos feitos durante vídeo também entram em `lastVideo.events`. O PIN não é registrado.
+
+O fluxo completo, comandos e valores aceitos estão em [API-REMOTE.md](API-REMOTE.md).
 
 ## Vídeo, Reframe e rastreamento na 0.3.0
 
@@ -67,6 +75,7 @@ Os dois seletores foram corrigidos. Um protocolo adicional os torna obrigatório
 | Vídeo | Master H.264 em formato próximo de 4:3 a 30 fps, AAC quando o microfone está disponível e ajustes manuais durante a gravação. |
 | Reframe | Exportação 1920 × 1080, 1080 × 1920 ou as duas a partir do mesmo master, preservando áudio. Centralizado com rastreamento desligado. |
 | Rastreamento | Pessoa com tronco superior e rosto como fallback via Vision, análise máxima de 5 Hz, suavização e retorno gradual ao centro quando o alvo é perdido. |
+| Controle remoto | API HTTP/JSON em loopback com PIN por sessão e cliente Python para Linux através de túnel SSH. |
 | Foco manual | Posição normalizada de 0 a 1, sem inferir distância em metros; atualiza durante o arraste com limitação de frequência. |
 | Focus peaking | Bordas em verde, limiar ajustável, análise de luminância reduzida a até 480 pixels na maior dimensão e no máximo 10 atualizações/s. |
 | Compensação EV | Passos de 1/3 EV em AUTO, dentro dos limites do aparelho. Em M, o fotômetro auxilia o ajuste de ISO e shutter. |
@@ -98,17 +107,17 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.3.0](https://github.com/Raidzap/Manual7/releases/tag/v0.3.0).
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.4.0](https://github.com/Raidzap/Manual7/releases/tag/v0.4.0).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
-2. Transfira `dev.manual7.camera_0.3.0_iphoneos-arm64.deb` para o iPhone.
+2. Transfira `dev.manual7.camera_0.4.0_iphoneos-arm64.deb` para o iPhone.
 3. Abra o pacote em um instalador de `.deb`, como o do Filza, se já estiver instalado. Alternativamente, em um terminal no iPhone, use o comando abaixo com o caminho real do arquivo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
-sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.3.0_iphoneos-arm64.deb
+sudo dpkg -i /var/mobile/Downloads/dev.manual7.camera_0.4.0_iphoneos-arm64.deb
 ```
 
 O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. A dependência `mobilesubstrate` é a interface de compatibilidade de hooking; use a implementação já fornecida pelo jailbreak.
@@ -122,6 +131,7 @@ O visor permanece fixo acima dos controles. Deslize a área dos controles para a
 - Use **AUTO** para compensação EV. **AE-L** mantém a exposição; **AF-L** mantém o foco atual. As travas são imediatas: aguarde o foco/exposição estabilizarem antes de travar.
 - Para JPEG, desligue **DNG RAW** e escolha **Tamanho**. Para RAW, ative **DNG RAW**. Toque em **FOTOGRAFAR**. O disparador aguarda os callbacks de aplicação dos ajustes manuais pendentes.
 - Para vídeo, selecione **Vídeo**, escolha **16:9**, **9:16** ou **Ambos** em Reframe. Ative **Rastrear** para seguir automaticamente uma pessoa ou deixe desligado para recorte central. Toque em **GRAVAR VÍDEO**, toque novamente para parar e mantenha o M7 aberto até o Fotos confirmar as saídas.
+- Para controle pelo notebook, instale um servidor OpenSSH no ambiente do jailbreak, abra M7 e siga [API-REMOTE.md](API-REMOTE.md). O painel precisa permanecer aberto e em primeiro plano.
 - **Exportar** lista até 12 cópias locais recentes, **Ver diagnóstico** e a ação de salvar uma foto pendente, quando houver. Ao selecionar uma foto, escolha **Adicionar ao Fotos** ou **Compartilhar**. A folha de compartilhamento permite salvar no app Arquivos e oferece as ações disponíveis no sistema para o formato selecionado. Fotos anteriores continuam preservadas; a interface lista somente as 12 recentes.
 
 As capturas confirmadas ficam no app Fotos. **Exportar pode ficar sem imagens mesmo após um salvamento bem-sucedido**, pois lista somente cópias locais. Quando o processo consegue gravá-las, o caminho aparece em `outputDirectory`; caso contrário, esse campo fica vazio. Uma falha no Fotos não apaga uma cópia local existente. Exportar não remove arquivos; o espaço ocupado pelas cópias cresce com as capturas.
@@ -145,6 +155,7 @@ Quando o armazenamento funciona, `ultima-captura.json` preserva as etapas após 
 11. Durante outra gravação, altere ISO/shutter, foco, EV e travas. Confirme efeito visual e eventos `controlChange`; confira `videoFrames`, `audioSamples`, `droppedVideoFrames` e backpressure.
 12. Repita 16:9, 9:16 e Ambos em cada lente. Interrompa uma gravação indo ao segundo plano e confirme finalização ou erro explícito. Se o Fotos falhar, use **Tentar salvar vídeos pendentes** sem gravar novamente.
 13. Ative Rastrear, mantenha uma pessoa no quadro e mova-a lentamente da esquerda para a direita e de cima para baixo. Confirme círculo verde durante a detecção, guias móveis e movimento suave nos dois vídeos. Saia do quadro por mais de um segundo e confirme retorno gradual ao centro. Repita com duas pessoas e com apenas o rosto visível. Copie o diagnóstico e confira `tracking.totalPoints`, `detections`, `misses`, `points` e `dynamicReframe`.
+14. No Linux, abra o túnel SSH, configure `MANUAL7_PIN` e execute `ping` e `state`. Altere cada controle remoto, fotografe JPEG, inicie/pare um vídeo e obtenha `diagnostic`. Confirme no iPhone que a interface acompanha as alterações e confira `remoteServer`, `remoteEvents` e eventos remotos em `lastVideo`. Teste PIN incorreto, segundo plano e fechamento do painel; a porta deve recusar conexões nesses estados.
 
 Se ocorrer erro de sessão, a interface permite fechar e reabrir o modo. Se a Câmera não abrir após instalar, desative a injeção para ela pelo recurso disponível no jailbreak ou remova o pacote em um terminal:
 
@@ -156,9 +167,9 @@ Depois feche e reabra a Câmera. A remoção do pacote não apaga as capturas ex
 
 ## Arquitetura e limites desta versão
 
-`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em filas seriais de sessão, mídia e rastreamento. `M7DeviceControls` aplica os controles e seleciona o formato de vídeo. `M7VideoRecorder` grava os sample buffers em um master H.264/AAC. `M7SubjectTracker` analisa pessoas/rostos com Vision. `M7VideoReframe` interpola os recortes 16:9/9:16. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para JPEG. `M7Storage` mantém as cópias opcionais e relatórios.
+`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em filas seriais de sessão, mídia e rastreamento. `M7RemoteServer` atende HTTP/JSON apenas em loopback e encaminha comandos autenticados para as mesmas ações da interface. `M7DeviceControls` aplica os controles e seleciona o formato de vídeo. `M7VideoRecorder` grava os sample buffers em um master H.264/AAC. `M7SubjectTracker` analisa pessoas/rostos com Vision. `M7VideoReframe` interpola os recortes 16:9/9:16. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para JPEG. `M7Storage` mantém as cópias opcionais e relatórios.
 
-O modo M7 tem interface em retrato, usa as lentes traseiras e mantém flash/torch desligados. Vídeo é 30 fps; não inclui 4K garantido, 60/120/240 fps, estabilização eletrônica, HDR, Live Photos, modo Retrato, câmera frontal, ProRAW, escolha manual de identidade, rastreamento de objetos genéricos ou controle do disparador nativo. O rastreamento detecta novamente a pessoa/rosto a cada análise; pessoas que se cruzam podem trocar de prioridade. Resolução/fps efetivos do master dependem dos formatos expostos pela lente no iOS 15.8.3 e aparecem no relatório. A carga térmica e o desempenho do Vision no A10 ainda precisam de medição física.
+O modo M7 tem interface em retrato, usa as lentes traseiras e mantém flash/torch desligados. Vídeo é 30 fps; não inclui 4K garantido, 60/120/240 fps, estabilização eletrônica, HDR, Live Photos, modo Retrato, câmera frontal, ProRAW, escolha manual de identidade, rastreamento de objetos genéricos ou controle do disparador nativo. O rastreamento detecta novamente a pessoa/rosto a cada análise; pessoas que se cruzam podem trocar de prioridade. O controle remoto requer que M7 esteja aberto, um túnel até o loopback e um servidor SSH instalado separadamente no jailbreak; ele não inicia a Câmera nem desbloqueia o iPhone. Resolução/fps efetivos do master dependem dos formatos expostos pela lente no iOS 15.8.3 e aparecem no relatório. A carga térmica e o desempenho do Vision no A10 ainda precisam de medição física.
 
 ## Compilar e testar
 
@@ -185,7 +196,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 `bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill central e móvel e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. `bash tests/run_subject_tracker_native.sh` executa o caminho sem pessoa em um pixel buffer real, conferindo rastros temporizados, estado, reset e JSON. Esses testes exigem macOS e não simulam câmera, microfone, PhotoKit, temperatura, uma pessoa real ou capacidade de codificação do iPhone.
 
-A suíte completa da 0.3.0 passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37384271042).
+A suíte da 0.4.0 também compila e exercita o servidor em loopback, autenticação por PIN, roteamento JSON, contadores, desligamento e o cliente Python. A validação no iPhone continua necessária.
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 
@@ -205,6 +216,8 @@ Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferra
 - [Apple — detecção de pessoas](https://developer.apple.com/documentation/vision/vndetecthumanrectanglesrequest): retângulos de pessoas e opção de tronco superior no Vision.
 - [Apple — detecção de rostos](https://developer.apple.com/documentation/vision/vndetectfacerectanglesrequest): retângulos normalizados de rostos usados como fallback.
 - [Apple — rampas de transformação](https://developer.apple.com/documentation/avfoundation/avmutablevideocompositionlayerinstruction/settransformramp(fromstart:toend:timerange:)): interpolação temporal aplicada ao recorte durante a exportação.
+- [Apple — privacidade de rede local](https://developer.apple.com/documentation/Technotes/tn3179-understanding-local-network-privacy): distinção entre aceitar TCP e iniciar conexões para a LAN, inclusive para BSD sockets.
+- [OpenSSH — `ssh(1)`](https://man.openbsd.org/ssh): encaminhamento local `-L` usado para transportar a API de loopback.
 - [Theos — rootless](https://theos.dev/docs/rootless): empacotamento e arquitetura.
 - [Dopamine — repositório oficial](https://github.com/opa334/Dopamine): jailbreak rootless.
 
@@ -219,4 +232,4 @@ Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferra
 
 `tests/run_capture_result_native.sh` exercita o seletor de resultados usado em produção com Foundation: ambas as ordens de callbacks, isolamento de RAW, sucesso JPEG, erro de processamento/término, bytes vazios, ausência de RAW e callbacks atrasados/duplicados/de outra captura. Os dados desse teste são fixtures; não simulam um sensor nem validam um DNG.
 
-O workflow `.github/workflows/native-tests.yml` executa os programas nativos de captura, erros, armazenamento, JPEG/ImageIO, gravação, Reframe e rastreamento em macOS, além dos testes C. Os contratos de compilação iOS são executados separadamente no ambiente Theos Linux. Resultados da versão são registrados em `BUILD.txt`. Esses testes não substituem a validação da câmera, microfone, Fotos, detecção real, desempenho e temperatura no iPhone.
+O workflow `.github/workflows/native-tests.yml` executa os programas nativos de captura, erros, armazenamento, JPEG/ImageIO, gravação, Reframe, rastreamento e servidor remoto em macOS, além dos testes C e do cliente Python. Os contratos de compilação iOS são executados separadamente no ambiente Theos Linux. Resultados da versão são registrados em `BUILD.txt`. Esses testes não substituem a validação da câmera, microfone, Fotos, túnel SSH, detecção real, desempenho e temperatura no iPhone.

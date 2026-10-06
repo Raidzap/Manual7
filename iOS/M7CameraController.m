@@ -7,6 +7,7 @@
 #import "M7VideoRecorder.h"
 #import "M7VideoReframe.h"
 #import "M7SubjectTracker.h"
+#import "M7RemoteServer.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
@@ -75,6 +76,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) UISegmentedControl *lens;
 @property (nonatomic) UISegmentedControl *captureMode;
 @property (nonatomic) UISegmentedControl *videoFormat;
+@property (nonatomic) UILabel *remoteLabel;
 @property (nonatomic) UIView *rawRow;
 @property (nonatomic) UIView *sizeRow;
 @property (nonatomic) UIView *videoFormatRow;
@@ -99,6 +101,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) NSMutableArray<NSDictionary *> *pendingVideos;
 @property (nonatomic) M7VideoRecorder *videoRecorder;
 @property (nonatomic) M7SubjectTracker *subjectTracker;
+@property (nonatomic) M7RemoteServer *remoteServer;
+@property (nonatomic) NSString *remotePIN;
+@property (nonatomic) NSMutableArray<NSDictionary *> *remoteEvents;
 @property (atomic) BOOL videoRecording;
 @property (atomic) BOOL videoProcessing;
 @property (atomic) BOOL videoModeActive;
@@ -198,8 +203,10 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.photoOnlyRequested = atomic_load(&M7PhotoOnlyPreferred);
     self.sessionEvents = [NSMutableArray new];
     self.pendingVideos = [NSMutableArray new];
+    self.remoteEvents = [NSMutableArray new];
     self.subjectTracker = [M7SubjectTracker new];
     self.trackingCenter = CGPointMake(.5, .5);
+    self.remotePIN = [NSString stringWithFormat:@"%06u", arc4random_uniform(900000)+100000];
     self.videoBackgroundTask = UIBackgroundTaskInvalid;
     self.session = [AVCaptureSession new]; M7MarkSessionOwned(self.session);
     self.peakingThreshold = .2;
@@ -248,6 +255,14 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.captureMode.selectedSegmentIndex = 0;
     [self.captureMode addTarget:self action:@selector(changeCaptureMode) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"Modo" control:self.captureMode]];
+    self.remoteLabel = [UILabel new];
+    self.remoteLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightMedium];
+    self.remoteLabel.textColor = UIColor.systemYellowColor;
+    self.remoteLabel.adjustsFontSizeToFitWidth = YES;
+    self.remoteLabel.minimumScaleFactor = .7;
+    self.remoteLabel.text = [NSString stringWithFormat:@"SSH :17837 · PIN %@", self.remotePIN];
+    self.remoteLabel.accessibilityLabel = @"Controle remoto por SSH";
+    [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
     self.lens = [[UISegmentedControl alloc] initWithItems:@[@"1×", @"2×"]]; self.lens.selectedSegmentIndex = 0;
     [self.lens addTarget:self action:@selector(changeLens) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"Lente" control:self.lens]];
@@ -328,6 +343,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
         [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
     [self enableControls:NO];
+    [self startRemoteServer];
     __weak typeof(self) weakSelf = self;
     self.timer = [NSTimer scheduledTimerWithTimeInterval:.3 repeats:YES block:^(__unused NSTimer *t) {
         [weakSelf refresh];
@@ -467,6 +483,328 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     dispatch_async(dispatch_get_main_queue(), ^{ self.status.text = text; });
 }
 
+- (void)recordRemoteEvent:(NSString *)stage requestID:(NSString *)requestID
+    details:(NSDictionary *)details {
+    dispatch_async(self.sessionQueue, ^{
+        NSDictionary *event = @{ @"stage":stage ?: @"", @"time":@(NSDate.date.timeIntervalSince1970),
+            @"requestID":requestID ?: @"", @"details":M7JSONSnapshot(details ?: @{}) };
+        [self.remoteEvents addObject:event];
+        if (self.remoteEvents.count > 256) [self.remoteEvents removeObjectAtIndex:0];
+        [self recordSessionEvent:@"remoteControl" details:event];
+        BOOL commandEvent = [details[@"body"][@"command"] isKindOfClass:NSString.class] ||
+            [details[@"command"] isKindOfClass:NSString.class];
+        if ((self.videoRecording || self.videoProcessing) && commandEvent)
+            [self recordVideoStage:@"remoteControl" details:event];
+    });
+}
+
+- (void)startRemoteServer {
+    if (!self.remoteServer) {
+        __weak typeof(self) weakSelf = self;
+        self.remoteServer = [[M7RemoteServer alloc] initWithPort:17837 pin:self.remotePIN
+            handler:^(NSDictionary *request, M7RemoteResponse response) {
+                typeof(self) owner = weakSelf;
+                if (!owner) { response(503, @{ @"ok":@NO, @"error":@"O painel M7 foi encerrado." }); return; }
+                [owner handleRemoteRequest:request response:response];
+            }];
+    }
+    NSError *error = nil;
+    BOOL started = [self.remoteServer start:&error];
+    self.remoteLabel.textColor = started ? UIColor.systemGreenColor : UIColor.systemRedColor;
+    self.remoteLabel.text = started ? [NSString stringWithFormat:@"SSH :%u · PIN %@",
+        self.remoteServer.port, self.remotePIN] : @"Remoto indisponível · ver diagnóstico";
+    [self recordRemoteEvent:started ? @"serverStarted" : @"serverStartFailed" requestID:@""
+        details:@{ @"server":self.remoteServer.snapshot, @"error":M7ErrorDetails(error) }];
+}
+
+- (void)stopRemoteServerReason:(NSString *)reason {
+    NSDictionary *before = self.remoteServer.snapshot ?: @{};
+    [self.remoteServer stop];
+    [self recordRemoteEvent:@"serverStopped" requestID:@""
+        details:@{ @"reason":reason ?: @"", @"before":before }];
+}
+
+- (NSDictionary *)remoteUIState {
+    NSString *captureName = self.captureMode.selectedSegmentIndex == 1 ? @"video" : @"photo";
+    NSString *lensName = self.lens.selectedSegmentIndex == 1 ? @"tele" : @"wide";
+    NSArray *exposureNames = @[@"auto", @"manual", @"lock"];
+    NSArray *focusNames = @[@"auto", @"manual", @"lock"];
+    NSArray *videoNames = @[@"horizontal", @"vertical", @"both"];
+    NSInteger exposureIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.exposureMode.selectedSegmentIndex));
+    NSInteger focusIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.focusMode.selectedSegmentIndex));
+    NSInteger videoIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.videoFormat.selectedSegmentIndex));
+    return @{ @"captureMode":captureName, @"lens":lensName,
+        @"exposureMode":exposureNames[exposureIndex], @"focusMode":focusNames[focusIndex],
+        @"evThirds":@((NSInteger)self.evStepper.value), @"focusPosition":@(self.focusSlider.value),
+        @"raw":@(self.rawSwitch.on), @"jpegLongEdge":@(self.jpegLongEdge),
+        @"videoFormat":videoNames[videoIndex], @"tracking":@(self.trackingSwitch.on),
+        @"peaking":@(self.peakingSwitch.on), @"peakingThreshold":@(self.thresholdSlider.value),
+        @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
+        @"captureBusy":@(self.captureBusy), @"configured":@(self.configured),
+        @"available":@{ @"captureMode":@(self.captureMode.enabled), @"lens":@(self.lens.enabled),
+            @"exposure":@(self.exposureMode.enabled), @"iso":@(self.isoSlider.enabled),
+            @"shutter":@(self.shutterSlider.enabled), @"focus":@(self.focusMode.enabled),
+            @"focusPosition":@(self.focusSlider.enabled), @"ev":@(self.evStepper.enabled),
+            @"raw":@(self.rawSwitch.enabled), @"videoFormat":@(self.videoFormat.enabled),
+            @"tracking":@(self.trackingSwitch.enabled), @"peaking":@(self.peakingSwitch.enabled),
+            @"shutterButton":@(self.shutterButton.enabled) } };
+}
+
+- (void)remoteStateWithCompletion:(void (^)(NSDictionary *state))completion {
+    NSDictionary *ui = [self remoteUIState];
+    dispatch_async(self.sessionQueue, ^{
+        NSMutableDictionary *state = [ui mutableCopy];
+        AVCaptureDevice *device = self.input.device;
+        state[@"actual"] = device ? @{ @"ISO":@(device.ISO),
+            @"shutterSeconds":@(CMTimeGetSeconds(device.exposureDuration)),
+            @"exposureBias":@(device.exposureTargetBias), @"meterEV":@(device.exposureTargetOffset),
+            @"focusPosition":@(device.lensPosition), @"aperture":@(device.lensAperture) } : @{};
+        state[@"limits"] = self.limits ?: @{};
+        state[@"session"] = [self sessionDiagnostic];
+        state[@"remoteServer"] = self.remoteServer.snapshot ?: @{};
+        completion(M7JSONSnapshot(state));
+    });
+}
+
+- (void)handleRemoteRequest:(NSDictionary *)request response:(M7RemoteResponse)response {
+    NSString *requestID = request[@"requestID"] ?: @"";
+    NSString *method = request[@"method"] ?: @"";
+    NSString *path = request[@"path"] ?: @"";
+    NSDictionary *body = request[@"body"] ?: @{};
+    [self recordRemoteEvent:@"request" requestID:requestID
+        details:@{ @"method":method, @"path":path, @"body":body }];
+    void (^finish)(NSInteger, NSDictionary *) = ^(NSInteger statusCode, NSDictionary *result) {
+        NSMutableDictionary *payload = [result mutableCopy] ?: [NSMutableDictionary new];
+        payload[@"requestID"] = requestID;
+        NSMutableDictionary *logResult = [@{ @"statusCode":@(statusCode),
+            @"ok":payload[@"ok"] ?: @NO } mutableCopy];
+        for (NSString *key in @[@"accepted", @"command", @"error"])
+            if (payload[key]) logResult[key] = payload[key];
+        [self recordRemoteEvent:@"response" requestID:requestID
+            details:logResult];
+        response(statusCode, payload);
+    };
+    if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self remoteStateWithCompletion:^(NSDictionary *state) {
+                finish(200, @{ @"ok":@YES, @"version":@"0.4.0", @"state":state });
+            }];
+        });
+        return;
+    }
+    if ([method isEqual:@"GET"] && [path isEqual:@"/v1/diagnostic"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *visibleStatus = self.status.text ?: @"";
+            dispatch_async(self.sessionQueue, ^{
+                finish(200, @{ @"ok":@YES,
+                    @"report":[self diagnosticSnapshot:@"remote" status:visibleStatus] });
+            });
+        });
+        return;
+    }
+    if ([method isEqual:@"POST"] && [path isEqual:@"/v1/command"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self executeRemoteCommand:body requestID:requestID completion:finish];
+        });
+        return;
+    }
+    finish(404, @{ @"ok":@NO, @"error":@"Rota remota inexistente." });
+}
+
+- (NSDictionary *)applyRemoteControl:(NSString *)control value:(id)value error:(NSString **)error {
+    NSString *text = [value isKindOfClass:NSString.class] ? [value lowercaseString] : @"";
+    NSNumber *number = [value isKindOfClass:NSNumber.class] ? value : nil;
+    if ([control isEqual:@"captureMode"]) {
+        if (!self.captureMode.enabled) { if (error) *error = @"A troca Foto/Vídeo está bloqueada."; return nil; }
+        NSInteger index = [text isEqual:@"photo"] ? 0 : [text isEqual:@"video"] ? 1 : -1;
+        if (index < 0) { if (error) *error = @"captureMode aceita photo ou video."; return nil; }
+        BOOL changed = self.captureMode.selectedSegmentIndex != index;
+        self.captureMode.selectedSegmentIndex = index; if (changed) [self changeCaptureMode];
+        return @{ @"control":control, @"value":text, @"changed":@(changed) };
+    }
+    if ([control isEqual:@"lens"]) {
+        if (!self.lens.enabled) { if (error) *error = @"A lente está bloqueada durante a operação atual."; return nil; }
+        NSInteger index = [text isEqual:@"wide"] ? 0 : [text isEqual:@"tele"] ? 1 : -1;
+        if (index < 0) { if (error) *error = @"lens aceita wide ou tele."; return nil; }
+        BOOL changed = self.lens.selectedSegmentIndex != index;
+        self.lens.selectedSegmentIndex = index; if (changed) [self changeLens];
+        return @{ @"control":control, @"value":text, @"changed":@(changed) };
+    }
+    if ([control isEqual:@"exposureMode"]) {
+        if (!self.exposureMode.enabled) { if (error) *error = @"O controle de exposição está indisponível."; return nil; }
+        NSInteger index = [text isEqual:@"auto"] ? 0 : [text isEqual:@"manual"] ? 1 : [text isEqual:@"lock"] ? 2 : -1;
+        if (index < 0) { if (error) *error = @"exposureMode aceita auto, manual ou lock."; return nil; }
+        BOOL changed = self.exposureMode.selectedSegmentIndex != index;
+        self.exposureMode.selectedSegmentIndex = index; if (changed) [self changeExposureMode];
+        return @{ @"control":control, @"value":text, @"changed":@(changed) };
+    }
+    if ([control isEqual:@"iso"]) {
+        if (!number || !self.isoSlider.enabled) { if (error) *error = @"ISO requer exposição manual pronta."; return nil; }
+        double iso = number.doubleValue, minimum = [self.limits[@"minISO"] doubleValue];
+        double maximum = [self.limits[@"maxISO"] doubleValue];
+        if (!isfinite(iso) || iso < minimum || iso > maximum || minimum <= 0 || maximum <= minimum) {
+            if (error) *error = @"ISO fora dos limites informados em state.limits."; return nil;
+        }
+        self.isoSlider.value = (log(iso)-log(minimum))/(log(maximum)-log(minimum));
+        [self changeManualExposure];
+        return @{ @"control":control, @"value":@(iso), @"async":@YES };
+    }
+    if ([control isEqual:@"shutterSeconds"]) {
+        if (!number || !self.shutterSlider.enabled) { if (error) *error = @"Shutter requer exposição manual pronta."; return nil; }
+        double seconds = number.doubleValue;
+        if (!isfinite(seconds) || seconds < [self.limits[@"minSeconds"] doubleValue] ||
+            seconds > [self.limits[@"maxSeconds"] doubleValue]) {
+            if (error) *error = @"shutterSeconds fora dos limites informados em state.limits."; return nil;
+        }
+        int index = 0;
+        if (!m7_shutter_nearest(seconds, [self.limits[@"minSeconds"] doubleValue],
+            [self.limits[@"maxSeconds"] doubleValue], &index)) {
+            if (error) *error = @"Não foi possível mapear o shutter na grade de 1/3 stop."; return nil;
+        }
+        self.shutterSlider.value = index; [self changeManualExposure];
+        return @{ @"control":control, @"requested":@(seconds),
+            @"appliedGridSeconds":@(m7_shutter_seconds(index)), @"shutterIndex":@(index), @"async":@YES };
+    }
+    if ([control isEqual:@"evThirds"]) {
+        if (!number || !self.evStepper.enabled) { if (error) *error = @"EV requer exposição automática desbloqueada."; return nil; }
+        double raw = number.doubleValue; NSInteger thirds = (NSInteger)llround(raw);
+        if (!isfinite(raw) || fabs(raw-thirds) > .0001 || thirds < self.evStepper.minimumValue || thirds > self.evStepper.maximumValue) {
+            if (error) *error = @"evThirds deve ser inteiro e ficar dentro dos limites da câmera."; return nil;
+        }
+        self.evStepper.value = thirds; [self changeEV];
+        return @{ @"control":control, @"value":@(thirds), @"ev":@(thirds/3.0), @"async":@YES };
+    }
+    if ([control isEqual:@"focusMode"]) {
+        if (!self.focusMode.enabled) { if (error) *error = @"O modo de foco está indisponível."; return nil; }
+        NSInteger index = [text isEqual:@"auto"] ? 0 : [text isEqual:@"manual"] ? 1 : [text isEqual:@"lock"] ? 2 : -1;
+        if (index < 0) { if (error) *error = @"focusMode aceita auto, manual ou lock."; return nil; }
+        BOOL changed = self.focusMode.selectedSegmentIndex != index;
+        self.focusMode.selectedSegmentIndex = index; if (changed) [self changeFocusMode];
+        return @{ @"control":control, @"value":text, @"changed":@(changed) };
+    }
+    if ([control isEqual:@"focusPosition"]) {
+        if (!number || !self.focusSlider.enabled) { if (error) *error = @"focusPosition requer foco manual pronto."; return nil; }
+        double position = number.doubleValue;
+        if (!isfinite(position) || position < 0 || position > 1) {
+            if (error) *error = @"focusPosition deve ficar entre 0 e 1."; return nil;
+        }
+        self.focusSlider.value = position; [self changeManualFocus];
+        return @{ @"control":control, @"value":@(position), @"async":@YES };
+    }
+    if ([control isEqual:@"raw"]) {
+        if (!number || self.videoModeActive || !self.captureAvailable || (number.boolValue && !self.rawSwitch.enabled)) {
+            if (error) *error = @"RAW está indisponível no modo ou lente atual."; return nil;
+        }
+        self.rawSwitch.on = number.boolValue; [self updateSizeControl];
+        return @{ @"control":control, @"value":@(number.boolValue) };
+    }
+    if ([control isEqual:@"jpegLongEdge"]) {
+        NSArray *allowed = @[@0, @3264, @2560, @2048, @1600, @1280];
+        if (!number || self.videoModeActive || self.rawSwitch.on || !self.captureAvailable ||
+            ![allowed containsObject:@(number.unsignedIntegerValue)]) {
+            if (error) *error = @"jpegLongEdge aceita 0, 3264, 2560, 2048, 1600 ou 1280 com RAW desligado."; return nil;
+        }
+        NSUInteger edge = number.unsignedIntegerValue;
+        NSUInteger native = MAX([self.limits[@"nativeWidth"] unsignedIntegerValue],
+            [self.limits[@"nativeHeight"] unsignedIntegerValue]);
+        if (edge && edge >= native) { if (error) *error = @"O tamanho JPEG solicitado não é menor que o sensor."; return nil; }
+        self.jpegLongEdge = edge; [self updateSizeControl];
+        return @{ @"control":control, @"value":@(edge) };
+    }
+    if ([control isEqual:@"videoFormat"]) {
+        if (!self.videoFormat.enabled) { if (error) *error = @"Reframe está indisponível fora do modo Vídeo pronto."; return nil; }
+        NSInteger index = [text isEqual:@"horizontal"] ? 0 : [text isEqual:@"vertical"] ? 1 : [text isEqual:@"both"] ? 2 : -1;
+        if (index < 0) { if (error) *error = @"videoFormat aceita horizontal, vertical ou both."; return nil; }
+        self.videoFormat.selectedSegmentIndex = index; [self changeVideoFormat];
+        return @{ @"control":control, @"value":text };
+    }
+    if ([control isEqual:@"tracking"]) {
+        if (!number || !self.trackingSwitch.enabled) { if (error) *error = @"Tracking está indisponível agora."; return nil; }
+        self.trackingSwitch.on = number.boolValue; [self changeTracking];
+        return @{ @"control":control, @"value":@(number.boolValue) };
+    }
+    if ([control isEqual:@"peaking"]) {
+        if (!number || !self.peakingSwitch.enabled) { if (error) *error = @"Peaking está indisponível nesta sessão."; return nil; }
+        self.peakingSwitch.on = number.boolValue; [self changePeaking];
+        return @{ @"control":control, @"value":@(number.boolValue) };
+    }
+    if ([control isEqual:@"peakingThreshold"]) {
+        if (!number) { if (error) *error = @"peakingThreshold requer um número."; return nil; }
+        double threshold = number.doubleValue;
+        if (!isfinite(threshold) || threshold < self.thresholdSlider.minimumValue || threshold > self.thresholdSlider.maximumValue) {
+            if (error) *error = @"peakingThreshold deve ficar entre 0.03 e 0.6."; return nil;
+        }
+        self.thresholdSlider.value = threshold; [self changePeaking];
+        return @{ @"control":control, @"value":@(threshold) };
+    }
+    if (error) *error = @"Controle desconhecido. Consulte README/API-REMOTE.md.";
+    return nil;
+}
+
+- (void)executeRemoteCommand:(NSDictionary *)body requestID:(NSString *)requestID
+    completion:(M7RemoteResponse)completion {
+    NSString *command = [body[@"command"] isKindOfClass:NSString.class] ? body[@"command"] : @"";
+    if (!command.length) { completion(400, @{ @"ok":@NO, @"error":@"O campo command é obrigatório." }); return; }
+    if ([command isEqual:@"set"]) {
+        NSString *control = [body[@"control"] isKindOfClass:NSString.class] ? body[@"control"] : @"";
+        id value = body[@"value"];
+        NSString *error = nil;
+        NSDictionary *result = control.length && value ? [self applyRemoteControl:control value:value error:&error] : nil;
+        if (!result) { completion(409, @{ @"ok":@NO, @"error":error ?: @"control e value são obrigatórios." }); return; }
+        [self message:[NSString stringWithFormat:@"Remoto: %@ atualizado.", control]];
+        completion(202, @{ @"ok":@YES, @"accepted":@YES, @"command":command, @"result":result });
+        return;
+    }
+    if ([command isEqual:@"capture"] || [command isEqual:@"photo.capture"] ||
+        [command hasPrefix:@"record."]) {
+        BOOL photoOnly = [command isEqual:@"photo.capture"];
+        BOOL recordCommand = [command hasPrefix:@"record."];
+        BOOL validRecordAction = [command isEqual:@"record.start"] || [command isEqual:@"record.stop"] ||
+            [command isEqual:@"record.toggle"];
+        if (photoOnly && self.videoModeActive) { completion(409, @{ @"ok":@NO, @"error":@"photo.capture requer modo Foto." }); return; }
+        if (recordCommand && (!validRecordAction || !self.videoModeActive)) {
+            completion(409, @{ @"ok":@NO, @"error":@"O comando de gravação requer modo Vídeo." }); return;
+        }
+        if ([command isEqual:@"record.start"] && self.videoRecording) {
+            completion(409, @{ @"ok":@NO, @"error":@"A gravação já está ativa." }); return;
+        }
+        if ([command isEqual:@"record.stop"] && !self.videoRecording) {
+            completion(409, @{ @"ok":@NO, @"error":@"Não há gravação ativa." }); return;
+        }
+        if (!self.shutterButton.enabled && !self.videoRecording) {
+            completion(409, @{ @"ok":@NO, @"error":@"O disparador está bloqueado; consulte state." }); return;
+        }
+        [self capture];
+        completion(202, @{ @"ok":@YES, @"accepted":@YES, @"command":command });
+        return;
+    }
+    if ([command isEqual:@"photo.retry"] || [command isEqual:@"videos.retry"]) {
+        dispatch_async(self.sessionQueue, ^{
+            if ([command isEqual:@"photo.retry"]) {
+                if (!self.pendingPhoto) { completion(409, @{ @"ok":@NO, @"error":@"Não há foto pendente." }); return; }
+                [self savePhotoToPhotos:self.pendingPhoto];
+            } else {
+                if (!self.pendingVideos.count || self.videoRecording || self.videoProcessing) {
+                    completion(409, @{ @"ok":@NO, @"error":@"Não há vídeos prontos para repetir agora." }); return;
+                }
+                [self retryPendingVideos];
+            }
+            completion(202, @{ @"ok":@YES, @"accepted":@YES, @"command":command });
+        });
+        return;
+    }
+    if ([command isEqual:@"close"]) {
+        if (self.videoRecording || self.videoProcessing || self.captureBusy) {
+            completion(409, @{ @"ok":@NO, @"error":@"Finalize a captura ou o processamento antes de fechar." }); return;
+        }
+        completion(202, @{ @"ok":@YES, @"accepted":@YES, @"command":command });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC/3), dispatch_get_main_queue(), ^{ [self close]; });
+        return;
+    }
+    completion(400, @{ @"ok":@NO, @"error":@"Comando desconhecido. Consulte README/API-REMOTE.md.",
+        @"command":command, @"requestID":requestID ?: @"" });
+}
+
 - (NSURL *)outputDirectory {
     return self.storage.directory;
 }
@@ -478,7 +816,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.3.0";
+    self.captureTrace[@"version"] = @"0.4.0";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -590,7 +928,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.3.0";
+    diagnostic[@"version"] = @"0.4.0";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -972,7 +1310,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.3.0";
+    self.videoTrace[@"version"] = @"0.4.0";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -1619,9 +1957,10 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.3.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.4.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
+        @"remoteServer":self.remoteServer.snapshot ?: @{}, @"remoteEvents":self.remoteEvents ?: @[],
         @"pendingVideos":pendingVideoDetails,
         @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
         @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
@@ -1643,7 +1982,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"rawJPEGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.3.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.4.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -1691,7 +2030,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.3.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.4.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
@@ -1939,6 +2278,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (self.closing) return;
     if ([note.name isEqualToString:UIApplicationWillResignActiveNotification]) {
         self.peakingView.image = nil;
+        [self stopRemoteServerReason:@"applicationBackground"];
+        self.remoteLabel.textColor = UIColor.systemYellowColor;
+        self.remoteLabel.text = [NSString stringWithFormat:@"Pausado · PIN %@", self.remotePIN];
         dispatch_async(self.sessionQueue, ^{
             if (self.videoRecording) [self stopVideoRecordingReason:@"applicationBackground" error:nil];
             [self.session stopRunning];
@@ -1946,6 +2288,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         });
     } else if ([note.name isEqualToString:UIApplicationDidBecomeActiveNotification] ||
                [note.name isEqualToString:AVCaptureSessionInterruptionEndedNotification]) {
+        [self startRemoteServer];
         dispatch_async(self.sessionQueue, ^{
             if (self.configured && !self.closing) {
                 [self.session startRunning];
@@ -2047,6 +2390,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             return;
         }
         self.closing = YES;
+        [self stopRemoteServerReason:@"controllerClosed"];
         [self.session stopRunning];
         [self.videoOutput setSampleBufferDelegate:nil queue:NULL];
         [self.audioOutput setSampleBufferDelegate:nil queue:NULL];
@@ -2062,6 +2406,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)dealloc {
+    [_remoteServer stop];
     [_timer invalidate];
     for (id observer in _observers) [NSNotificationCenter.defaultCenter removeObserver:observer];
 }

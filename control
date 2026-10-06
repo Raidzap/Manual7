@@ -1,8 +1,8 @@
 Package: dev.manual7.camera
 Name: Manual7
-Version: 0.3.0
+Version: 0.4.0
 Architecture: iphoneos-arm64
-Description: Manual photo and video camera with Bayer DNG, focus peaking, subject tracking, and simultaneous 16:9/9:16 reframe for iPhone 7 Plus, iOS 15.
+Description: Manual photo/video camera with Linux remote control, Bayer DNG, peaking, tracking, and 16:9/9:16 reframe for iPhone 7 Plus, iOS 15.
 Maintainer: Manual7
 Author: Manual7
 Section: Tweaks

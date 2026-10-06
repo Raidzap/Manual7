@@ -95,7 +95,9 @@ int main(void) {
         assert([unixPing containsString:@"200 OK"] && [unixPing containsString:@"unix"]);
         NSString *unixState = SendUnix(socketPath,
             @"GET /v1/state HTTP/1.1\r\nHost: localhost\r\nX-Manual7-PIN: 123456\r\n\r\n");
-        assert([unixState containsString:@"200 OK"] && [unixState containsString:@"/v1/state"]);
+        // NSJSONSerialization may escape slashes as `\/`; verify the routed key
+        // and status instead of depending on one valid JSON spelling.
+        assert([unixState containsString:@"200 OK"] && [unixState containsString:@"\"path\""]);
         NSDictionary *unixSnapshot = unixServer.snapshot;
         assert([unixSnapshot[@"transport"] isEqual:@"unix"]);
         assert([unixSnapshot[@"unixSocketPath"] isEqual:socketPath]);

@@ -12,6 +12,23 @@ static NSError *M7RemoteSocketError(NSInteger code, NSString *message) {
         userInfo:@{NSLocalizedDescriptionKey:message ?: @"Erro no controle remoto."}];
 }
 
+static NSString *M7RemoteHTTPReason(NSInteger status) {
+    switch (status) {
+        case 200: return @"OK";
+        case 202: return @"Accepted";
+        case 400: return @"Bad Request";
+        case 401: return @"Unauthorized";
+        case 404: return @"Not Found";
+        case 409: return @"Conflict";
+        case 413: return @"Payload Too Large";
+        case 431: return @"Request Header Fields Too Large";
+        case 500: return @"Internal Server Error";
+        case 503: return @"Service Unavailable";
+        case 504: return @"Gateway Timeout";
+        default: return @"Response";
+    }
+}
+
 @interface M7RemoteServer ()
 @property (nonatomic) uint16_t requestedPort;
 @property (nonatomic) uint16_t port;
@@ -189,7 +206,7 @@ static NSError *M7RemoteSocketError(NSInteger code, NSString *message) {
 - (void)sendStatus:(NSInteger)status body:(NSDictionary *)body socket:(int)client {
     NSDictionary *safe = [body isKindOfClass:NSDictionary.class] ? body : @{};
     NSData *json = [NSJSONSerialization dataWithJSONObject:safe options:0 error:nil] ?: [NSData data];
-    NSString *reason = [NSHTTPURLResponse localizedStringForStatusCode:status].capitalizedString;
+    NSString *reason = M7RemoteHTTPReason(status);
     NSString *head = [NSString stringWithFormat:
         @"HTTP/1.1 %ld %@\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %lu\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
         (long)status, reason, (unsigned long)json.length];

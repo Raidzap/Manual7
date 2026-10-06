@@ -201,7 +201,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 A suíte da 0.5.0 também compila e exercita o servidor em loopback, autenticação por PIN, roteamento JSON, contadores, desligamento, detecção do pacote/serviço OpenSSH e seleção automática da porta no cliente Python. A validação no iPhone continua necessária.
 
-A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37528756514).
+A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37530532921).
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 

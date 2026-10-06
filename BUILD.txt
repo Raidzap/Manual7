@@ -1,22 +1,24 @@
-Manual7 0.4.0 — registro de build
-Data UTC: 2026-10-06T20:45:32Z
+Manual7 0.5.0 — registro de build
+Data UTC: 2026-10-06T20:59:39Z
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos.
-Testes Linux: 14 aprovados (8 Core/C, 3 contratos de callbacks com SDK iOS e 3 do cliente remoto Python).
-Análise estática: controlador, servidor remoto, formato, gravador, Reframe, rastreador e controles sem diagnósticos.
-Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, Reframe central/dinâmico, gravador, Vision, servidor remoto em loopback e Core aprovados.
-CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37528756514
-Commit de código testado: 3ccb1cf160fdec5d588f359a09dd04b176a81cc9
+Testes Linux: 18 aprovados (8 Core/C, 3 contratos de callbacks com SDK iOS, 6 do cliente remoto Python e 1 contrato do pacote).
+Compilação: controlador, servidor remoto, detector OpenSSH, formato, gravador, Reframe, rastreador e controles sem diagnósticos.
+Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, Reframe central/dinâmico, gravador, Vision, servidor remoto em loopback, detector OpenSSH e Core aprovados.
+CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37530532921
+Commit de código testado: f613312c184051b16a6307c82597abf7434181d6
 Controle remoto: HTTP/JSON em 127.0.0.1:17837, PIN aleatório por painel, timeout, limite de corpo, contadores e desligamento em segundo plano/fechamento.
 Cliente Linux: túnel SSH, estado, diagnóstico, foto, gravação, repetição de salvamento e alteração de todos os controles M7 expostos.
+OpenSSH: dependência oficial `openssh-server` do Procursus, detecção de `/var/jb`, plist, configuração, chaves e portas 22/2222; nenhum segredo incluído.
+Cliente SSH: seleção automática entre as portas 22 e 2222, com opção de porta explícita.
 Registro remoto: até 256 eventos no diagnóstico; comandos durante vídeo são correlacionados com lastVideo; PIN não é registrado.
 Vídeo: master H.264 em tempo real, AAC quando disponível, formato 4:3 preferencial a 30 fps.
 Reframe: 1920 × 1080, 1080 × 1920 ou ambos, central ou rastreado, derivados do mesmo master.
 Rastreamento: Vision de pessoa/tronco superior com rosto como fallback, máximo de 5 Hz, suavização e rampas temporais.
 Estado informado pelo usuário: JPEG salva. RAW 0.1.5 falha com −11800 / −12780; teste RAW+JPEG 0.1.6 ainda não executado.
-Validação física 0.4.0: ainda não realizada; testes não executam sensor, PhotoKit, servidor SSH do jailbreak, rede/túnel reais, térmica ou desempenho no A10.
-SHA-256 do .deb: 531a6a263230c9ef4d166af1565b74a5b6751cc58e7a4b02a5dcd7e0a0890b44
+Validação física 0.5.0: ainda não realizada; testes não executam sensor, PhotoKit, OpenSSH/launchd do iPhone, rede/túnel reais, térmica ou desempenho no A10.
+SHA-256 do .deb: 423211e843e03a1c293b0ab70862085466e31106836d855714a7b3f1e3c68a91

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -71,6 +72,22 @@ def command(base_url: str, pin: str, name: str, **values: Any) -> dict[str, Any]
     return request(base_url, pin, "POST", "/v1/command", {"command": name, **values})
 
 
+def choose_ssh_port(host: str, requested: int | None, timeout: float = 1.5) -> int:
+    """Returns an explicit port or probes the two Procursus launchd sockets."""
+    if requested is not None:
+        if requested < 1 or requested > 65535:
+            raise ValueError("a porta SSH deve estar entre 1 e 65535")
+        return requested
+    failures = []
+    for port in (22, 2222):
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return port
+        except OSError as exc:
+            failures.append(f"{port}: {exc}")
+    raise OSError(f"OpenSSH não respondeu em {host} nas portas 22 ou 2222 ({'; '.join(failures)})")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Controle remoto do Manual7 por túnel SSH.")
     parser.add_argument("--url", default=os.environ.get("MANUAL7_URL", DEFAULT_URL))
@@ -96,7 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     tunnel = sub.add_parser("tunnel", help="Abre o encaminhamento SSH para o iPhone.")
     tunnel.add_argument("host", help="IP ou nome do iPhone.")
     tunnel.add_argument("--user", default="mobile")
-    tunnel.add_argument("--ssh-port", type=int, default=22)
+    tunnel.add_argument("--ssh-port", type=int,
+                        help="Porta SSH explícita; sem esta opção, testa 22 e 2222.")
     tunnel.add_argument("--local-port", type=int, default=17837)
     return parser
 
@@ -104,10 +122,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.subcommand == "tunnel":
+        try:
+            ssh_port = choose_ssh_port(args.host, args.ssh_port)
+        except (OSError, ValueError) as exc:
+            print(f"Manual7: {exc}", file=sys.stderr)
+            return 1
         target = f"{args.user}@{args.host}"
         forwarding = f"{args.local_port}:127.0.0.1:17837"
-        print(f"Abrindo http://127.0.0.1:{args.local_port} → {target}:17837", file=sys.stderr)
-        return subprocess.call(["ssh", "-p", str(args.ssh_port), "-N", "-L", forwarding,
+        print(f"Abrindo http://127.0.0.1:{args.local_port} → {target}:17837 via SSH {ssh_port}",
+              file=sys.stderr)
+        return subprocess.call(["ssh", "-p", str(ssh_port), "-N", "-L", forwarding,
                                 "-o", "ExitOnForwardFailure=yes", target])
     if args.subcommand != "ping" and not args.pin:
         print("Informe --pin ou defina MANUAL7_PIN com o PIN mostrado no iPhone.", file=sys.stderr)

@@ -8,6 +8,7 @@
 #import "M7VideoReframe.h"
 #import "M7SubjectTracker.h"
 #import "M7RemoteServer.h"
+#import "M7OpenSSHStatus.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
@@ -104,6 +105,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) M7RemoteServer *remoteServer;
 @property (nonatomic) NSString *remotePIN;
 @property (nonatomic) NSMutableArray<NSDictionary *> *remoteEvents;
+@property (nonatomic) NSDictionary *openSSHStatus;
 @property (atomic) BOOL videoRecording;
 @property (atomic) BOOL videoProcessing;
 @property (atomic) BOOL videoModeActive;
@@ -204,6 +206,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.sessionEvents = [NSMutableArray new];
     self.pendingVideos = [NSMutableArray new];
     self.remoteEvents = [NSMutableArray new];
+    self.openSSHStatus = @{ @"checking":@YES, @"package":@"openssh-server",
+        @"checkedPorts":@[@22, @2222] };
     self.subjectTracker = [M7SubjectTracker new];
     self.trackingCenter = CGPointMake(.5, .5);
     self.remotePIN = [NSString stringWithFormat:@"%06u", arc4random_uniform(900000)+100000];
@@ -260,7 +264,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.remoteLabel.textColor = UIColor.systemYellowColor;
     self.remoteLabel.adjustsFontSizeToFitWidth = YES;
     self.remoteLabel.minimumScaleFactor = .7;
-    self.remoteLabel.text = [NSString stringWithFormat:@"SSH :17837 · PIN %@", self.remotePIN];
+    self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH… · API 17837 · PIN %@", self.remotePIN];
     self.remoteLabel.accessibilityLabel = @"Controle remoto por SSH";
     [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
     self.lens = [[UISegmentedControl alloc] initWithItems:@[@"1×", @"2×"]]; self.lens.selectedSegmentIndex = 0;
@@ -510,11 +514,32 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     }
     NSError *error = nil;
     BOOL started = [self.remoteServer start:&error];
-    self.remoteLabel.textColor = started ? UIColor.systemGreenColor : UIColor.systemRedColor;
-    self.remoteLabel.text = started ? [NSString stringWithFormat:@"SSH :%u · PIN %@",
-        self.remoteServer.port, self.remotePIN] : @"Remoto indisponível · ver diagnóstico";
+    self.remoteLabel.textColor = started ? UIColor.systemYellowColor : UIColor.systemRedColor;
+    self.remoteLabel.text = started ? [NSString stringWithFormat:@"OpenSSH… · API %u · PIN %@",
+        self.remoteServer.port, self.remotePIN] : @"API remota indisponível · ver diagnóstico";
     [self recordRemoteEvent:started ? @"serverStarted" : @"serverStartFailed" requestID:@""
         details:@{ @"server":self.remoteServer.snapshot, @"error":M7ErrorDetails(error) }];
+    if (!started) return;
+    dispatch_async(self.sessionQueue, ^{
+        NSDictionary *status = M7OpenSSHStatus();
+        self.openSSHStatus = status;
+        [self recordRemoteEvent:@"openSSHChecked" requestID:@"" details:status];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!self.remoteServer.running || self.closing) return;
+            if ([status[@"serviceReachable"] boolValue]) {
+                self.remoteLabel.textColor = UIColor.systemGreenColor;
+                self.remoteLabel.text = [NSString stringWithFormat:@"SSH %@ · API %u · PIN %@",
+                    status[@"preferredPort"], self.remoteServer.port, self.remotePIN];
+            } else if ([status[@"installed"] boolValue]) {
+                self.remoteLabel.textColor = UIColor.systemYellowColor;
+                self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH iniciando · API %u · PIN %@",
+                    self.remoteServer.port, self.remotePIN];
+            } else {
+                self.remoteLabel.textColor = UIColor.systemRedColor;
+                self.remoteLabel.text = @"OpenSSH ausente · reinstale M7";
+            }
+        });
+    });
 }
 
 - (void)stopRemoteServerReason:(NSString *)reason {
@@ -562,6 +587,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         state[@"limits"] = self.limits ?: @{};
         state[@"session"] = [self sessionDiagnostic];
         state[@"remoteServer"] = self.remoteServer.snapshot ?: @{};
+        state[@"openSSH"] = self.openSSHStatus ?: @{};
         completion(M7JSONSnapshot(state));
     });
 }
@@ -587,7 +613,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.4.0", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.5.0", @"state":state });
             }];
         });
         return;
@@ -816,7 +842,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.4.0";
+    self.captureTrace[@"version"] = @"0.5.0";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -928,7 +954,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.4.0";
+    diagnostic[@"version"] = @"0.5.0";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -1310,7 +1336,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.4.0";
+    self.videoTrace[@"version"] = @"0.5.0";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -1957,10 +1983,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.4.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.5.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"remoteServer":self.remoteServer.snapshot ?: @{}, @"remoteEvents":self.remoteEvents ?: @[],
+        @"openSSH":self.openSSHStatus ?: @{},
         @"pendingVideos":pendingVideoDetails,
         @"storage":self.storage.attempts ?: @[], @"outputDirectory":self.outputDirectory.path ?: @"",
         @"localPhotoCount":@(files.count), @"listError":listError.localizedDescription ?: @"",
@@ -1982,7 +2009,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"rawJPEGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.4.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.5.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -2030,7 +2057,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.4.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.5.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];

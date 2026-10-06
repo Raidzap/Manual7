@@ -4,6 +4,7 @@ import pathlib
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -62,6 +63,26 @@ class RemoteCLITests(unittest.TestCase):
             REMOTE.request(self.url, "654321", "GET", "/v1/fail")
         self.assertEqual(caught.exception.status, 409)
         self.assertIn("ocupado", str(caught.exception))
+
+    def test_ssh_port_uses_explicit_value(self):
+        with mock.patch.object(REMOTE.socket, "create_connection") as connect:
+            self.assertEqual(REMOTE.choose_ssh_port("iphone.local", 2222), 2222)
+            connect.assert_not_called()
+
+    def test_ssh_port_falls_back_to_procursus_2222(self):
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        with mock.patch.object(REMOTE.socket, "create_connection",
+                               side_effect=[OSError("closed"), connection]) as connect:
+            self.assertEqual(REMOTE.choose_ssh_port("iphone.local", None), 2222)
+            self.assertEqual([call.args[0][1] for call in connect.call_args_list], [22, 2222])
+
+    def test_ssh_port_reports_both_failures(self):
+        with mock.patch.object(REMOTE.socket, "create_connection",
+                               side_effect=[OSError("closed"), OSError("closed")]):
+            with self.assertRaises(OSError) as caught:
+                REMOTE.choose_ssh_port("iphone.local", None)
+        self.assertIn("22 ou 2222", str(caught.exception))
 
 
 if __name__ == "__main__":

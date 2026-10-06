@@ -1,9 +1,9 @@
 Package: dev.manual7.camera
 Name: Manual7
-Version: 0.4.0
+Version: 0.5.0
 Architecture: iphoneos-arm64
-Description: Manual photo/video camera with Linux remote control, Bayer DNG, peaking, tracking, and 16:9/9:16 reframe for iPhone 7 Plus, iOS 15.
+Description: Manual photo/video camera with integrated OpenSSH remote control, Bayer DNG, peaking, tracking, and 16:9/9:16 reframe for iPhone 7 Plus, iOS 15.
 Maintainer: Manual7
 Author: Manual7
 Section: Tweaks
-Depends: mobilesubstrate, firmware (>= 15.0), firmware (<< 16.0)
+Depends: mobilesubstrate, openssh-server, firmware (>= 15.0), firmware (<< 16.0)

@@ -28,5 +28,7 @@ jobs:
         run: bash tests/run_subject_tracker_native.sh
       - name: Remote control server
         run: bash tests/run_remote_server_native.sh
+      - name: OpenSSH package and service status
+        run: bash tests/run_openssh_status_native.sh
       - name: Core math
         run: python3 -m unittest discover -s tests -v

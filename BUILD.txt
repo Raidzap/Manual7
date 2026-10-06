@@ -1,5 +1,5 @@
-Manual7 0.2.0 — registro de build
-Data UTC: 2026-10-05T21:47:00Z
+Manual7 0.3.0 — registro de build
+Data UTC: 2026-10-05T22:44:30Z
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
@@ -7,14 +7,15 @@ Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos.
 Testes Linux: 11 aprovados (8 C; 3 contratos de callbacks com SDK iOS).
-Análise estática: controlador, formato, gravador e Reframe sem diagnósticos.
-Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, geometria/exportação Reframe, estado do gravador e Core aprovados.
-CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37378095792
-Commit de código testado: 3550af19ab381ceb804404929a6f11fa261124a0
+Análise estática: controlador, formato, gravador, Reframe, rastreador e controles sem diagnósticos.
+Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, Reframe central/dinâmico, estado do gravador, rastreador Vision e Core aprovados.
+CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37384271042
+Commit de código testado: dbdaf941e8163a4a5980f8d27f61f36a37cd4202
 Vídeo: master H.264 em tempo real, AAC quando disponível, formato 4:3 preferencial a 30 fps.
 Reframe: 1920 × 1080, 1080 × 1920 ou ambos, derivados do mesmo master e salvos serialmente no Fotos.
+Rastreamento: detecção Vision de pessoa/tronco superior com rosto como fallback, máximo de 5 Hz, suavização, retorno ao centro e rampas temporais no Reframe.
+Diagnóstico de rastreamento: tempos, centros, confiança, candidatos, caixas, perdas, erros, totais e amostragem de até 600 pontos no relatório.
 Recuperação: arquivos finais pendentes e master após falha de exportação são retidos em temporários e redescobertos.
-Diagnóstico: estado de sessão/writer, frames, áudio, drops, backpressure, espaço, arquivos, exportações, PhotoKit e mudanças de controles.
 Estado informado pelo usuário: JPEG salva. RAW 0.1.5 falha com −11800 / −12780 mesmo sem saída de vídeo; teste RAW+JPEG 0.1.6 ainda não executado.
-Validação física 0.2.0: ainda não realizada; testes não executam sensor, microfone, PhotoKit, térmica ou desempenho no A10.
-SHA-256 do .deb: db1bfec4cf33c9db92611b51b31ef333a71f4f701a689ed8fe107d1823b304f7
+Validação física 0.3.0: ainda não realizada; testes não executam sensor, microfone, PhotoKit, detecção de pessoa real, térmica ou desempenho no A10.
+SHA-256 do .deb: 68153aec192af46deb898887acfdb1264327c87e02eae47c7ad41dc27c6f0b8c

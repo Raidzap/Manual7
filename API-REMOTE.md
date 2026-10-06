@@ -1,8 +1,8 @@
 # Controle remoto do Manual7
 
-O Manual7 0.5.0 executa um servidor HTTP/JSON apenas em `127.0.0.1:17837` dentro do processo Câmera. A porta não é exposta diretamente ao Wi‑Fi. O notebook chega a ela por um túnel SSH autenticado e cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7.
+O Manual7 0.5.1 executa um servidor HTTP/JSON no socket Unix `/var/tmp/Manual7-api.sock` dentro do processo Câmera. O notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado; cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7.
 
-Essa arquitetura segue a distinção documentada pela Apple: escutar e aceitar TCP não exige acesso à rede local, enquanto iniciar uma conexão TCP para um endereço da LAN exige. O M7 também evita Bonjour e interfaces Wi‑Fi, mantendo o listener apenas no loopback. O encaminhamento `ssh -L` cria a porta no notebook e pede ao lado remoto para conectar ao loopback do iPhone por dentro do canal SSH.
+O primeiro teste físico da 0.5.0 retornou `EPERM` em `bind(AF_INET)` no sandbox do processo Câmera. A 0.5.1 não abre porta TCP no iPhone: cria um socket Unix com modo `0600`, acessível somente pelo usuário `mobile`, e o remove ao parar. O formato `ssh -L porta:socket_remoto` é suportado pelo OpenSSH para encaminhar uma porta TCP local a um socket Unix remoto.
 
 O servidor existe enquanto o painel M7 está aberto e o app está em primeiro plano. Um novo painel recebe outro PIN. O servidor para quando a Câmera vai para segundo plano e volta com o mesmo PIN quando o painel retorna.
 
@@ -14,7 +14,7 @@ O serviço do Procursus aceita as portas 22 e 2222. O cliente abaixo testa ambas
 
 ## Preparar o iPhone e o Linux
 
-Descubra o IP do iPhone na rede local, abra M7 e confirme que a linha Remoto mostra `SSH 22` ou `SSH 2222`. No primeiro terminal do notebook:
+Descubra o IP do iPhone na rede local, abra M7 e confirme que a linha Remoto mostra `SSH 22 · API Unix` ou `SSH 2222 · API Unix`. No primeiro terminal do notebook:
 
 ```sh
 python3 tools/manual7_remote.py tunnel 192.168.1.50
@@ -23,7 +23,7 @@ python3 tools/manual7_remote.py tunnel 192.168.1.50
 Se a porta 22 estiver ativa, isso executa o equivalente a:
 
 ```sh
-ssh -N -L 17837:127.0.0.1:17837 mobile@192.168.1.50
+ssh -N -L 127.0.0.1:17837:/var/tmp/Manual7-api.sock mobile@192.168.1.50
 ```
 
 Mantenha o túnel aberto. Em outro terminal, informe o PIN que aparece no iPhone:
@@ -46,6 +46,8 @@ Para escolher a porta SSH explicitamente:
 ```sh
 python3 tools/manual7_remote.py tunnel 192.168.1.50 --ssh-port 2222
 ```
+
+`--remote-port 17837` mantém compatibilidade com o transporte TCP da 0.5.0, embora esse transporte tenha sido negado pelo sandbox no aparelho testado.
 
 ## Ações
 
@@ -128,6 +130,6 @@ curl -s -X POST \
   http://127.0.0.1:17837/v1/command | jq
 ```
 
-O servidor aceita corpo JSON de até 64 KiB, fecha a conexão após cada resposta e aplica timeout de dez segundos. Requisições malformadas, PINs incorretos, comandos bloqueados e respostas aparecem em `remoteServer` e `remoteEvents` no diagnóstico. `openSSH` registra presença do pacote, configuração, quantidade de chaves e portas abertas, sem ler ou copiar chaves. O PIN não é copiado para os logs.
+O servidor aceita corpo JSON de até 64 KiB, fecha a conexão após cada resposta e aplica timeout de dez segundos. Requisições malformadas, PINs incorretos, comandos bloqueados e respostas aparecem em `remoteServer` e `remoteEvents` no diagnóstico. `remoteServer` informa `transport`, `unixSocketPath` e estado da escuta; erros incluem a operação POSIX, código e motivo. `openSSH` registra presença do pacote, configuração, quantidade de chaves e portas abertas, sem ler ou copiar chaves. O PIN não é copiado para os logs.
 
 Referências: [Apple TN3179 — local network privacy](https://developer.apple.com/documentation/Technotes/tn3179-understanding-local-network-privacy), [OpenSSH `ssh(1)` — encaminhamento `-L`](https://man.openbsd.org/ssh), [controle do pacote OpenSSH no Procursus](https://github.com/ProcursusTeam/Procursus/blob/main/build_info/openssh-server.control) e [plist do `sshd`](https://github.com/ProcursusTeam/Procursus/blob/main/build_misc/openssh/com.openssh.sshd.plist).

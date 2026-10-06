@@ -10,10 +10,15 @@ typedef void (^M7RemoteRequestHandler)(NSDictionary *request, M7RemoteResponse r
 // tunnel; all non-ping routes also require the per-controller PIN.
 @interface M7RemoteServer : NSObject
 @property (nonatomic, readonly) uint16_t port;
+@property (nonatomic, readonly) NSString *transport;
+@property (nonatomic, readonly, nullable) NSString *unixSocketPath;
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 - (instancetype)initWithPort:(uint16_t)port
                           pin:(NSString *)pin
                       handler:(M7RemoteRequestHandler)handler;
+- (instancetype)initWithUnixSocketPath:(NSString *)path
+                                   pin:(NSString *)pin
+                               handler:(M7RemoteRequestHandler)handler;
 - (instancetype)init NS_UNAVAILABLE;
 - (BOOL)start:(NSError **)error;
 - (void)stop;

@@ -17,6 +17,7 @@ from typing import Any
 
 
 DEFAULT_URL = "http://127.0.0.1:17837"
+DEFAULT_REMOTE_SOCKET = "/var/tmp/Manual7-api.sock"
 
 
 class RemoteError(RuntimeError):
@@ -88,6 +89,19 @@ def choose_ssh_port(host: str, requested: int | None, timeout: float = 1.5) -> i
     raise OSError(f"OpenSSH não respondeu em {host} nas portas 22 ou 2222 ({'; '.join(failures)})")
 
 
+def tunnel_forwarding(local_port: int, remote_socket: str,
+                      remote_port: int | None = None) -> str:
+    if local_port < 1 or local_port > 65535:
+        raise ValueError("a porta local deve estar entre 1 e 65535")
+    if remote_port is not None:
+        if remote_port < 1 or remote_port > 65535:
+            raise ValueError("a porta remota deve estar entre 1 e 65535")
+        return f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}"
+    if not remote_socket.startswith("/") or ":" in remote_socket:
+        raise ValueError("o socket remoto deve ser um caminho absoluto sem dois-pontos")
+    return f"127.0.0.1:{local_port}:{remote_socket}"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Controle remoto do Manual7 por túnel SSH.")
     parser.add_argument("--url", default=os.environ.get("MANUAL7_URL", DEFAULT_URL))
@@ -116,6 +130,10 @@ def build_parser() -> argparse.ArgumentParser:
     tunnel.add_argument("--ssh-port", type=int,
                         help="Porta SSH explícita; sem esta opção, testa 22 e 2222.")
     tunnel.add_argument("--local-port", type=int, default=17837)
+    tunnel.add_argument("--remote-socket", default=DEFAULT_REMOTE_SOCKET,
+                        help="Socket Unix da API no iPhone.")
+    tunnel.add_argument("--remote-port", type=int,
+                        help="Usa uma porta TCP remota de uma versão M7 anterior.")
     return parser
 
 
@@ -124,12 +142,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.subcommand == "tunnel":
         try:
             ssh_port = choose_ssh_port(args.host, args.ssh_port)
+            forwarding = tunnel_forwarding(args.local_port, args.remote_socket, args.remote_port)
         except (OSError, ValueError) as exc:
             print(f"Manual7: {exc}", file=sys.stderr)
             return 1
         target = f"{args.user}@{args.host}"
-        forwarding = f"{args.local_port}:127.0.0.1:17837"
-        print(f"Abrindo http://127.0.0.1:{args.local_port} → {target}:17837 via SSH {ssh_port}",
+        destination = f"127.0.0.1:{args.remote_port}" if args.remote_port else args.remote_socket
+        print(f"Abrindo http://127.0.0.1:{args.local_port} → {target}:{destination} via SSH {ssh_port}",
               file=sys.stderr)
         return subprocess.call(["ssh", "-p", str(ssh_port), "-N", "-L", forwarding,
                                 "-o", "ExitOnForwardFailure=yes", target])

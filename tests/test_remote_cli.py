@@ -84,6 +84,20 @@ class RemoteCLITests(unittest.TestCase):
                 REMOTE.choose_ssh_port("iphone.local", None)
         self.assertIn("22 ou 2222", str(caught.exception))
 
+    def test_tunnel_forwards_local_tcp_to_remote_unix_socket(self):
+        self.assertEqual(
+            REMOTE.tunnel_forwarding(17837, "/var/tmp/Manual7-api.sock"),
+            "127.0.0.1:17837:/var/tmp/Manual7-api.sock")
+
+    def test_tunnel_keeps_legacy_tcp_option(self):
+        self.assertEqual(
+            REMOTE.tunnel_forwarding(27837, "/ignored.sock", 17837),
+            "127.0.0.1:27837:127.0.0.1:17837")
+
+    def test_tunnel_rejects_relative_socket(self):
+        with self.assertRaises(ValueError):
+            REMOTE.tunnel_forwarding(17837, "tmp/Manual7.sock")
+
 
 if __name__ == "__main__":
     unittest.main()

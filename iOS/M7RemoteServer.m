@@ -1,15 +1,22 @@
 #import "M7RemoteServer.h"
 #import <arpa/inet.h>
+#import <errno.h>
 #import <netinet/in.h>
+#import <string.h>
 #import <sys/socket.h>
+#import <sys/stat.h>
+#import <sys/un.h>
 #import <unistd.h>
 
 static const NSUInteger M7RemoteMaximumHeaderBytes = 16 * 1024;
 static const NSUInteger M7RemoteMaximumBodyBytes = 64 * 1024;
 
-static NSError *M7RemoteSocketError(NSInteger code, NSString *message) {
+static NSError *M7RemoteSocketError(NSInteger code, NSString *operation, NSString *message) {
+    NSString *reason = code > 0 ? [NSString stringWithUTF8String:strerror((int)code)] : @"";
     return [NSError errorWithDomain:@"Manual7.RemoteServer" code:code
-        userInfo:@{NSLocalizedDescriptionKey:message ?: @"Erro no controle remoto."}];
+        userInfo:@{NSLocalizedDescriptionKey:message ?: @"Erro no controle remoto.",
+            NSLocalizedFailureReasonErrorKey:reason ?: @"", @"operation":operation ?: @"",
+            @"posixCode":@(code)}];
 }
 
 static NSString *M7RemoteHTTPReason(NSInteger status) {
@@ -31,7 +38,10 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
 
 @interface M7RemoteServer ()
 @property (nonatomic) uint16_t requestedPort;
+@property (nonatomic) NSString *requestedUnixSocketPath;
 @property (nonatomic) uint16_t port;
+@property (nonatomic) NSString *transport;
+@property (nonatomic) NSString *unixSocketPath;
 @property (nonatomic) NSString *pin;
 @property (nonatomic, copy) M7RemoteRequestHandler handler;
 @property (nonatomic) dispatch_queue_t acceptQueue;
@@ -43,6 +53,9 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
 @property (nonatomic) NSTimeInterval startedAt;
 @property (nonatomic) NSTimeInterval lastRequestAt;
 @property (nonatomic) NSUInteger generation;
+@property (nonatomic) dev_t unixSocketDevice;
+@property (nonatomic) ino_t unixSocketInode;
+@property (nonatomic) BOOL ownsUnixSocketPath;
 @end
 
 @implementation M7RemoteServer
@@ -51,6 +64,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
     handler:(M7RemoteRequestHandler)handler {
     if ((self = [super init])) {
         _requestedPort = port;
+        _transport = @"tcp";
         _pin = [pin copy];
         _handler = [handler copy];
         _acceptQueue = dispatch_queue_create("dev.manual7.remote.accept", DISPATCH_QUEUE_SERIAL);
@@ -59,12 +73,94 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
     return self;
 }
 
+- (instancetype)initWithUnixSocketPath:(NSString *)path pin:(NSString *)pin
+    handler:(M7RemoteRequestHandler)handler {
+    if ((self = [super init])) {
+        _requestedUnixSocketPath = [path copy];
+        _transport = @"unix";
+        _pin = [pin copy];
+        _handler = [handler copy];
+        _acceptQueue = dispatch_queue_create("dev.manual7.remote.accept", DISPATCH_QUEUE_SERIAL);
+        _listeningSocket = -1;
+    }
+    return self;
+}
+
+- (BOOL)finishStartingSocket:(int)server error:(NSError **)error {
+    if (listen(server, 8) != 0) {
+        NSInteger code = errno; close(server);
+        if (error) *error = M7RemoteSocketError(code, @"listen",
+            @"Não foi possível iniciar a escuta do controle remoto.");
+        return NO;
+    }
+    self.listeningSocket = server;
+    self.running = YES;
+    NSUInteger generation = ++self.generation;
+    self.startedAt = NSDate.date.timeIntervalSince1970;
+    [self beginAcceptingSocket:server generation:generation];
+    return YES;
+}
+
+- (BOOL)startUnixSocket:(NSError **)error {
+    NSData *pathData = [self.requestedUnixSocketPath dataUsingEncoding:NSUTF8StringEncoding];
+    if (!pathData.length || pathData.length >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+        if (error) *error = M7RemoteSocketError(ENAMETOOLONG, @"path",
+            @"O caminho do socket Unix da API é inválido.");
+        return NO;
+    }
+    int server = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server < 0) {
+        if (error) *error = M7RemoteSocketError(errno, @"socket(AF_UNIX)",
+            @"Não foi possível criar o socket Unix da API.");
+        return NO;
+    }
+#ifdef SO_NOSIGPIPE
+    int enabled = 1;
+    setsockopt(server, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+#endif
+    const char *path = self.requestedUnixSocketPath.fileSystemRepresentation;
+    unlink(path); // A Camera é a única proprietária desse endpoint efêmero.
+    struct sockaddr_un address = {0};
+#if defined(__APPLE__)
+    address.sun_len = sizeof(address);
+#endif
+    address.sun_family = AF_UNIX;
+    memcpy(address.sun_path, path, pathData.length + 1);
+    if (bind(server, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        NSInteger code = errno; close(server);
+        if (error) *error = M7RemoteSocketError(code, @"bind(AF_UNIX)",
+            @"Não foi possível criar o endpoint Unix da API remota.");
+        return NO;
+    }
+    if (chmod(path, S_IRUSR | S_IWUSR) != 0) {
+        NSInteger code = errno; close(server); unlink(path);
+        if (error) *error = M7RemoteSocketError(code, @"chmod(AF_UNIX)",
+            @"Não foi possível proteger o endpoint Unix da API remota.");
+        return NO;
+    }
+    struct stat info = {0};
+    if (lstat(path, &info) == 0) {
+        self.unixSocketDevice = info.st_dev;
+        self.unixSocketInode = info.st_ino;
+        self.ownsUnixSocketPath = YES;
+    }
+    self.unixSocketPath = self.requestedUnixSocketPath;
+    self.port = 0;
+    if (![self finishStartingSocket:server error:error]) {
+        unlink(path); self.ownsUnixSocketPath = NO; self.unixSocketPath = nil;
+        return NO;
+    }
+    return YES;
+}
+
 - (BOOL)start:(NSError **)error {
     @synchronized (self) {
         if (self.running) return YES;
+        if (self.requestedUnixSocketPath.length) return [self startUnixSocket:error];
         int server = socket(AF_INET, SOCK_STREAM, 0);
         if (server < 0) {
-            if (error) *error = M7RemoteSocketError(errno, @"Não foi possível criar o socket remoto.");
+            if (error) *error = M7RemoteSocketError(errno, @"socket(AF_INET)",
+                @"Não foi possível criar o socket TCP remoto.");
             return NO;
         }
         int enabled = 1;
@@ -79,26 +175,15 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (bind(server, (struct sockaddr *)&address, sizeof(address)) != 0) {
             NSInteger code = errno; close(server);
-            if (error) *error = M7RemoteSocketError(code,
-                @"A porta do controle remoto já está ocupada ou indisponível.");
-            return NO;
-        }
-        if (listen(server, 8) != 0) {
-            NSInteger code = errno; close(server);
-            if (error) *error = M7RemoteSocketError(code,
-                @"Não foi possível iniciar a escuta do controle remoto.");
+            if (error) *error = M7RemoteSocketError(code, @"bind(AF_INET)",
+                @"O processo não conseguiu reservar a porta TCP da API remota.");
             return NO;
         }
         socklen_t length = sizeof(address);
         if (getsockname(server, (struct sockaddr *)&address, &length) == 0)
             self.port = ntohs(address.sin_port);
         else self.port = self.requestedPort;
-        self.listeningSocket = server;
-        self.running = YES;
-        NSUInteger generation = ++self.generation;
-        self.startedAt = NSDate.date.timeIntervalSince1970;
-        [self beginAcceptingSocket:server generation:generation];
-        return YES;
+        return [self finishStartingSocket:server error:error];
     }
 }
 
@@ -138,6 +223,13 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         int server = self.listeningSocket;
         self.listeningSocket = -1;
         if (server >= 0) { shutdown(server, SHUT_RDWR); close(server); }
+        if (self.ownsUnixSocketPath && self.unixSocketPath.length) {
+            struct stat info = {0};
+            if (lstat(self.unixSocketPath.fileSystemRepresentation, &info) == 0 &&
+                info.st_dev == self.unixSocketDevice && info.st_ino == self.unixSocketInode)
+                unlink(self.unixSocketPath.fileSystemRepresentation);
+        }
+        self.ownsUnixSocketPath = NO;
     }
 }
 
@@ -236,8 +328,9 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         @synchronized (self) { ++self.acceptedRequests; self.lastRequestAt = NSDate.date.timeIntervalSince1970; }
         NSString *path = request[@"path"];
         if ([path isEqual:@"/v1/ping"]) {
-            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.5.0",
-                @"port":@(self.port), @"authentication":@"X-Manual7-PIN" } socket:client];
+            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.5.1",
+                @"transport":self.transport ?: @"", @"port":@(self.port),
+                @"authentication":@"X-Manual7-PIN" } socket:client];
             return;
         }
         NSString *providedPIN = request[@"headers"][@"x-manual7-pin"];
@@ -276,7 +369,17 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
 
 - (NSDictionary *)snapshot {
     @synchronized (self) {
-        return @{ @"running":@(self.running), @"bind":@"127.0.0.1", @"port":@(self.port),
+        struct stat info = {0};
+        BOOL unixSocketExists = self.unixSocketPath.length &&
+            lstat(self.unixSocketPath.fileSystemRepresentation, &info) == 0;
+        NSString *binding = [self.transport isEqual:@"unix"] ? (self.unixSocketPath ?: @"") : @"127.0.0.1";
+        return @{ @"running":@(self.running), @"transport":self.transport ?: @"", @"bind":binding,
+            @"port":@(self.port), @"unixSocketPath":self.unixSocketPath ?: @"",
+            @"unixSocketExists":@(unixSocketExists),
+            @"unixSocketPermissions":unixSocketExists ?
+                [NSString stringWithFormat:@"%04o", (unsigned int)(info.st_mode & 0777)] : @"",
+            @"unixSocketOwnerUID":unixSocketExists ? @(info.st_uid) : @0,
+            @"unixSocketOwnerGID":unixSocketExists ? @(info.st_gid) : @0,
             @"pinRequired":@YES, @"startedAt":@(self.startedAt),
             @"lastRequestAt":@(self.lastRequestAt), @"acceptedRequests":@(self.acceptedRequests),
             @"rejectedRequests":@(self.rejectedRequests), @"malformedRequests":@(self.malformedRequests) };

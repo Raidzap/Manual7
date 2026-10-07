@@ -1,10 +1,10 @@
 # Controle remoto do Manual7
 
-O Manual7 0.5.1 executa um servidor HTTP/JSON no socket Unix `/var/tmp/Manual7-api.sock` dentro do processo Câmera. O notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado; cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7.
+O Manual7 0.6.0 executa um servidor HTTP/JSON no socket Unix `/var/tmp/Manual7-api.sock` dentro do processo Câmera. O notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado; cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7. A mesma sessão SSH encaminha `/var/tmp/Manual7-webcam.sock` para `127.0.0.1:17838`.
 
 O primeiro teste físico da 0.5.0 retornou `EPERM` em `bind(AF_INET)` no sandbox do processo Câmera. A 0.5.1 não abre porta TCP no iPhone: cria um socket Unix com modo `0600`, acessível somente pelo usuário `mobile`, e o remove ao parar. O formato `ssh -L porta:socket_remoto` é suportado pelo OpenSSH para encaminhar uma porta TCP local a um socket Unix remoto.
 
-O servidor existe enquanto o painel M7 está aberto e o app está em primeiro plano. Um novo painel recebe outro PIN. O servidor para quando a Câmera vai para segundo plano e volta com o mesmo PIN quando o painel retorna.
+O servidor de controle existe enquanto o painel M7 está aberto e o app está em primeiro plano. Um novo painel recebe outro PIN. A webcam é ligada separadamente pela interface ou pelo comando `webcam.start`. Os dois servidores param quando a Câmera vai para segundo plano; a API volta com o mesmo PIN quando o painel retorna, enquanto a webcam permanece desligada até nova solicitação.
 
 ## OpenSSH incluído na instalação
 
@@ -23,7 +23,10 @@ python3 tools/manual7_remote.py tunnel 192.168.1.50
 Se a porta 22 estiver ativa, isso executa o equivalente a:
 
 ```sh
-ssh -N -L 127.0.0.1:17837:/var/tmp/Manual7-api.sock mobile@192.168.1.50
+ssh -N \
+  -L 127.0.0.1:17837:/var/tmp/Manual7-api.sock \
+  -L 127.0.0.1:17838:/var/tmp/Manual7-webcam.sock \
+  mobile@192.168.1.50
 ```
 
 Mantenha o túnel aberto. Em outro terminal, informe o PIN que aparece no iPhone:
@@ -55,6 +58,8 @@ python3 tools/manual7_remote.py tunnel 192.168.1.50 --ssh-port 2222
 python3 tools/manual7_remote.py photo
 python3 tools/manual7_remote.py record start
 python3 tools/manual7_remote.py record stop
+python3 tools/manual7_remote.py webcam start --format horizontal
+python3 tools/manual7_remote.py webcam stop
 python3 tools/manual7_remote.py capture
 python3 tools/manual7_remote.py retry photo
 python3 tools/manual7_remote.py retry videos
@@ -63,7 +68,9 @@ python3 tools/manual7_remote.py watch --interval 1
 python3 tools/manual7_remote.py close
 ```
 
-`capture` aciona o mesmo disparador mostrado no M7: fotografa no modo Foto e inicia ou encerra no modo Vídeo. `photo` recusa a ação fora do modo Foto. `record start/stop` recusa estados incompatíveis. Respostas `202 Accepted` indicam que o comando foi aceito; use `state` para acompanhar a aplicação assíncrona, a gravação, o processamento e o salvamento.
+`capture` aciona o mesmo disparador mostrado no M7: fotografa no modo Foto e inicia ou encerra no modo Vídeo. `photo` recusa a ação fora do modo Foto. `record start/stop` recusa estados incompatíveis. `webcam start/stop` controla o servidor MJPEG; `--format` aceita `horizontal` ou `vertical`. Respostas `202 Accepted` indicam que o comando foi aceito; use `state` para acompanhar a aplicação assíncrona, a gravação, o processamento, a webcam e o salvamento.
+
+O preparo do dispositivo virtual, o comando `webcam-feed` e os limites da primeira versão estão em [WEBCAM-LINUX.md](WEBCAM-LINUX.md).
 
 ## Controles
 
@@ -82,6 +89,7 @@ O formato é `set CONTROLE VALOR`:
 | `raw` | `true`, `false` |
 | `jpegLongEdge` | `0`, `3264`, `2560`, `2048`, `1600`, `1280`; `0` significa Original |
 | `videoFormat` | `horizontal`, `vertical`, `both` |
+| `webcamFormat` | `horizontal`, `vertical`; requer webcam parada |
 | `tracking` | `true`, `false` |
 | `peaking` | `true`, `false` |
 | `peakingThreshold` | número de `0.03` a `0.6` |
@@ -130,6 +138,6 @@ curl -s -X POST \
   http://127.0.0.1:17837/v1/command | jq
 ```
 
-O servidor aceita corpo JSON de até 64 KiB, fecha a conexão após cada resposta e aplica timeout de dez segundos. Requisições malformadas, PINs incorretos, comandos bloqueados e respostas aparecem em `remoteServer` e `remoteEvents` no diagnóstico. `remoteServer` informa `transport`, `unixSocketPath` e estado da escuta; erros incluem a operação POSIX, código e motivo. `openSSH` registra presença do pacote, configuração, quantidade de chaves e portas abertas, sem ler ou copiar chaves. O PIN não é copiado para os logs.
+O servidor aceita corpo JSON de até 64 KiB, fecha a conexão após cada resposta e aplica timeout de dez segundos. Requisições malformadas, PINs incorretos, comandos bloqueados e respostas aparecem em `remoteServer` e `remoteEvents` no diagnóstico. `remoteServer` informa `transport`, `unixSocketPath` e estado da escuta; erros incluem a operação POSIX, código e motivo. `webcam` informa formato, dimensões, frames, clientes, bytes, descartes, último erro e o socket MJPEG. `openSSH` registra presença do pacote, configuração, quantidade de chaves e portas abertas, sem ler ou copiar chaves. O PIN não é copiado para os logs.
 
 Referências: [Apple TN3179 — local network privacy](https://developer.apple.com/documentation/Technotes/tn3179-understanding-local-network-privacy), [OpenSSH `ssh(1)` — encaminhamento `-L`](https://man.openbsd.org/ssh), [controle do pacote OpenSSH no Procursus](https://github.com/ProcursusTeam/Procursus/blob/main/build_info/openssh-server.control) e [plist do `sshd`](https://github.com/ProcursusTeam/Procursus/blob/main/build_misc/openssh/com.openssh.sshd.plist).

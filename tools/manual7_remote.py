@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -18,6 +19,8 @@ from typing import Any
 
 DEFAULT_URL = "http://127.0.0.1:17837"
 DEFAULT_REMOTE_SOCKET = "/var/tmp/Manual7-api.sock"
+DEFAULT_WEBCAM_URL = "http://127.0.0.1:17838/v1/webcam.mjpg"
+DEFAULT_WEBCAM_SOCKET = "/var/tmp/Manual7-webcam.sock"
 
 
 class RemoteError(RuntimeError):
@@ -102,6 +105,32 @@ def tunnel_forwarding(local_port: int, remote_socket: str,
     return f"127.0.0.1:{local_port}:{remote_socket}"
 
 
+def webcam_ffmpeg_command(executable: str, webcam_url: str, pin: str,
+                          device: Path) -> list[str]:
+    return [executable, "-hide_banner", "-loglevel", "warning",
+            "-fflags", "nobuffer", "-flags", "low_delay",
+            "-thread_queue_size", "64",
+            "-headers", f"X-Manual7-PIN: {pin}\r\n",
+            "-f", "mpjpeg", "-i", webcam_url,
+            "-an", "-vf", "format=yuv420p", "-r", "10",
+            "-f", "v4l2", str(device)]
+
+
+def wait_webcam(webcam_url: str, pin: str, timeout: float = 10) -> None:
+    """Wait until the authenticated MJPEG endpoint has returned its headers."""
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        req = urllib.request.Request(webcam_url, headers={"X-Manual7-PIN": pin})
+        try:
+            with urllib.request.urlopen(req, timeout=min(2, timeout)):
+                return
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+            time.sleep(.2)
+    raise TimeoutError(f"endpoint MJPEG não ficou pronto: {last_error or 'timeout'}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Controle remoto do Manual7 por túnel SSH.")
     parser.add_argument("--url", default=os.environ.get("MANUAL7_URL", DEFAULT_URL))
@@ -116,6 +145,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("photo", help="Fotografa; requer modo Foto.")
     record = sub.add_parser("record", help="Inicia, para ou alterna a gravação.")
     record.add_argument("action", choices=("start", "stop", "toggle"))
+    webcam = sub.add_parser("webcam", help="Inicia ou para a saída MJPEG da webcam.")
+    webcam.add_argument("action", choices=("start", "stop"))
+    webcam.add_argument("--format", choices=("horizontal", "vertical"))
+    feed = sub.add_parser("webcam-feed",
+                          help="Alimenta um dispositivo v4l2loopback com a webcam M7.")
+    feed.add_argument("--device", type=Path, default=Path("/dev/video10"))
+    feed.add_argument("--format", choices=("horizontal", "vertical"), default="horizontal")
+    feed.add_argument("--webcam-url",
+                      default=os.environ.get("MANUAL7_WEBCAM_URL", DEFAULT_WEBCAM_URL))
+    feed.add_argument("--ffmpeg", default="ffmpeg")
+    feed.add_argument("--keep-enabled", action="store_true",
+                      help="Mantém a saída M7 ativa quando o FFmpeg termina.")
     setting = sub.add_parser("set", help="Altera um controle do M7.")
     setting.add_argument("control")
     setting.add_argument("value")
@@ -134,6 +175,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Socket Unix da API no iPhone.")
     tunnel.add_argument("--remote-port", type=int,
                         help="Usa uma porta TCP remota de uma versão M7 anterior.")
+    tunnel.add_argument("--webcam-local-port", type=int, default=17838)
+    tunnel.add_argument("--webcam-remote-socket", default=DEFAULT_WEBCAM_SOCKET,
+                        help="Socket Unix MJPEG no iPhone.")
     return parser
 
 
@@ -143,14 +187,18 @@ def main(argv: list[str] | None = None) -> int:
         try:
             ssh_port = choose_ssh_port(args.host, args.ssh_port)
             forwarding = tunnel_forwarding(args.local_port, args.remote_socket, args.remote_port)
+            webcam_forwarding = tunnel_forwarding(args.webcam_local_port,
+                                                   args.webcam_remote_socket)
         except (OSError, ValueError) as exc:
             print(f"Manual7: {exc}", file=sys.stderr)
             return 1
         target = f"{args.user}@{args.host}"
         destination = f"127.0.0.1:{args.remote_port}" if args.remote_port else args.remote_socket
-        print(f"Abrindo http://127.0.0.1:{args.local_port} → {target}:{destination} via SSH {ssh_port}",
-              file=sys.stderr)
-        return subprocess.call(["ssh", "-p", str(ssh_port), "-N", "-L", forwarding,
+        print(f"API http://127.0.0.1:{args.local_port} → {target}:{destination}", file=sys.stderr)
+        print(f"Webcam http://127.0.0.1:{args.webcam_local_port}/v1/webcam.mjpg "
+              f"→ {target}:{args.webcam_remote_socket} via SSH {ssh_port}", file=sys.stderr)
+        return subprocess.call(["ssh", "-p", str(ssh_port), "-N",
+                                "-L", forwarding, "-L", webcam_forwarding,
                                 "-o", "ExitOnForwardFailure=yes", target])
     if args.subcommand != "ping" and not args.pin:
         print("Informe --pin ou defina MANUAL7_PIN com o PIN mostrado no iPhone.", file=sys.stderr)
@@ -173,6 +221,35 @@ def main(argv: list[str] | None = None) -> int:
             result = command(args.url, args.pin, "photo.capture")
         elif args.subcommand == "record":
             result = command(args.url, args.pin, f"record.{args.action}")
+        elif args.subcommand == "webcam":
+            if args.format and args.action == "start":
+                command(args.url, args.pin, "webcam.stop")
+                command(args.url, args.pin, "set", control="webcamFormat", value=args.format)
+            result = command(args.url, args.pin, f"webcam.{args.action}")
+        elif args.subcommand == "webcam-feed":
+            executable = shutil.which(args.ffmpeg)
+            if not executable:
+                print(f"Manual7: FFmpeg não encontrado: {args.ffmpeg}", file=sys.stderr)
+                return 2
+            if not args.device.exists():
+                print(f"Manual7: dispositivo v4l2loopback não existe: {args.device}", file=sys.stderr)
+                return 2
+            started = False
+            try:
+                command(args.url, args.pin, "webcam.stop")
+                command(args.url, args.pin, "set", control="webcamFormat", value=args.format)
+                command(args.url, args.pin, "webcam.start")
+                started = True
+                wait_webcam(args.webcam_url, args.pin)
+                print(f"Manual7 {args.format} → {args.device}; Ctrl+C encerra.", file=sys.stderr)
+                return subprocess.call(webcam_ffmpeg_command(executable, args.webcam_url,
+                                                             args.pin, args.device))
+            finally:
+                if started and not args.keep_enabled:
+                    try:
+                        command(args.url, args.pin, "webcam.stop")
+                    except Exception as exc:  # The SSH tunnel may already be closed.
+                        print(f"Manual7: não foi possível desligar a webcam: {exc}", file=sys.stderr)
         elif args.subcommand == "set":
             result = command(args.url, args.pin, "set", control=args.control,
                              value=parse_value(args.value))

@@ -9,6 +9,8 @@
 #import "M7SubjectTracker.h"
 #import "M7RemoteServer.h"
 #import "M7OpenSSHStatus.h"
+#import "M7WebcamEncoder.h"
+#import "M7WebcamServer.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
@@ -54,6 +56,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) dispatch_queue_t sessionQueue;
 @property (nonatomic) dispatch_queue_t videoQueue;
 @property (nonatomic) dispatch_queue_t trackingQueue;
+@property (nonatomic) dispatch_queue_t webcamQueue;
 @property (nonatomic) AVCaptureSession *session;
 @property (nonatomic) AVCaptureDeviceInput *input;
 @property (nonatomic) AVCapturePhotoOutput *photoOutput;
@@ -78,6 +81,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) UISegmentedControl *captureMode;
 @property (nonatomic) UISegmentedControl *videoFormat;
 @property (nonatomic) UILabel *remoteLabel;
+@property (nonatomic) UISwitch *webcamSwitch;
+@property (nonatomic) UISegmentedControl *webcamFormat;
 @property (nonatomic) UIView *rawRow;
 @property (nonatomic) UIView *sizeRow;
 @property (nonatomic) UIView *videoFormatRow;
@@ -103,6 +108,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) M7VideoRecorder *videoRecorder;
 @property (nonatomic) M7SubjectTracker *subjectTracker;
 @property (nonatomic) M7RemoteServer *remoteServer;
+@property (nonatomic) M7WebcamServer *webcamServer;
+@property (nonatomic) M7WebcamEncoder *webcamEncoder;
 @property (nonatomic) NSString *remotePIN;
 @property (nonatomic) NSMutableArray<NSDictionary *> *remoteEvents;
 @property (nonatomic) NSDictionary *openSSHStatus;
@@ -121,6 +128,14 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) NSArray<NSDictionary *> *videoTrackingPoints;
 @property (atomic) BOOL trackingEnabled;
 @property (atomic) BOOL trackingPending;
+@property (atomic) BOOL webcamEnabled;
+@property (atomic) BOOL webcamEncoding;
+@property (atomic) BOOL webcamVertical;
+@property (atomic) BOOL webcamRequested;
+@property (atomic) NSUInteger webcamBusyDrops;
+@property (nonatomic) NSDictionary *lastWebcamError;
+@property (nonatomic) CFTimeInterval lastWebcamTime;
+@property (nonatomic) CFTimeInterval lastWebcamErrorLogTime;
 @property (nonatomic) CFTimeInterval lastTrackingTime;
 @property (nonatomic) CFTimeInterval lastTrackingErrorLogTime;
 @property (nonatomic) CGPoint trackingCenter;
@@ -200,6 +215,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.sessionQueue = dispatch_queue_create("dev.manual7.session", DISPATCH_QUEUE_SERIAL);
     self.videoQueue = dispatch_queue_create("dev.manual7.media", DISPATCH_QUEUE_SERIAL);
     self.trackingQueue = dispatch_queue_create("dev.manual7.tracking", DISPATCH_QUEUE_SERIAL);
+    self.webcamQueue = dispatch_queue_create("dev.manual7.webcam.encode", DISPATCH_QUEUE_SERIAL);
     self.controllerID = NSUUID.UUID.UUIDString;
     self.sessionID = NSUUID.UUID.UUIDString;
     self.photoOnlyRequested = atomic_load(&M7PhotoOnlyPreferred);
@@ -211,6 +227,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.subjectTracker = [M7SubjectTracker new];
     self.trackingCenter = CGPointMake(.5, .5);
     self.remotePIN = [NSString stringWithFormat:@"%06u", arc4random_uniform(900000)+100000];
+    self.webcamEncoder = [M7WebcamEncoder new];
+    self.webcamServer = [[M7WebcamServer alloc] initWithUnixSocketPath:@"/var/tmp/Manual7-webcam.sock"
+        pin:self.remotePIN];
     self.videoBackgroundTask = UIBackgroundTaskInvalid;
     self.session = [AVCaptureSession new]; M7MarkSessionOwned(self.session);
     self.peakingThreshold = .2;
@@ -267,6 +286,13 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH… · API Unix · PIN %@", self.remotePIN];
     self.remoteLabel.accessibilityLabel = @"Controle remoto por SSH";
     [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
+    self.webcamSwitch = [UISwitch new];
+    [self.webcamSwitch addTarget:self action:@selector(changeWebcam) forControlEvents:UIControlEventValueChanged];
+    [stack addArrangedSubview:[self row:@"Webcam" control:self.webcamSwitch]];
+    self.webcamFormat = [[UISegmentedControl alloc] initWithItems:@[@"16:9", @"9:16"]];
+    self.webcamFormat.selectedSegmentIndex = 0;
+    [self.webcamFormat addTarget:self action:@selector(changeWebcamFormat) forControlEvents:UIControlEventValueChanged];
+    [stack addArrangedSubview:[self row:@"WC formato" control:self.webcamFormat]];
     self.lens = [[UISegmentedControl alloc] initWithItems:@[@"1×", @"2×"]]; self.lens.selectedSegmentIndex = 0;
     [self.lens addTarget:self action:@selector(changeLens) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"Lente" control:self.lens]];
@@ -562,14 +588,17 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSArray *exposureNames = @[@"auto", @"manual", @"lock"];
     NSArray *focusNames = @[@"auto", @"manual", @"lock"];
     NSArray *videoNames = @[@"horizontal", @"vertical", @"both"];
+    NSArray *webcamNames = @[@"horizontal", @"vertical"];
     NSInteger exposureIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.exposureMode.selectedSegmentIndex));
     NSInteger focusIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.focusMode.selectedSegmentIndex));
     NSInteger videoIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.videoFormat.selectedSegmentIndex));
+    NSInteger webcamIndex = MIN((NSInteger)1, MAX((NSInteger)0, self.webcamFormat.selectedSegmentIndex));
     return @{ @"captureMode":captureName, @"lens":lensName,
         @"exposureMode":exposureNames[exposureIndex], @"focusMode":focusNames[focusIndex],
         @"evThirds":@((NSInteger)self.evStepper.value), @"focusPosition":@(self.focusSlider.value),
         @"raw":@(self.rawSwitch.on), @"jpegLongEdge":@(self.jpegLongEdge),
         @"videoFormat":videoNames[videoIndex], @"tracking":@(self.trackingSwitch.on),
+        @"webcam":@(self.webcamSwitch.on), @"webcamFormat":webcamNames[webcamIndex],
         @"peaking":@(self.peakingSwitch.on), @"peakingThreshold":@(self.thresholdSlider.value),
         @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
         @"captureBusy":@(self.captureBusy), @"configured":@(self.configured),
@@ -579,6 +608,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             @"focusPosition":@(self.focusSlider.enabled), @"ev":@(self.evStepper.enabled),
             @"raw":@(self.rawSwitch.enabled), @"videoFormat":@(self.videoFormat.enabled),
             @"tracking":@(self.trackingSwitch.enabled), @"peaking":@(self.peakingSwitch.enabled),
+            @"webcam":@(self.webcamSwitch.enabled), @"webcamFormat":@(self.webcamFormat.enabled),
             @"shutterButton":@(self.shutterButton.enabled) } };
 }
 
@@ -594,6 +624,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         state[@"limits"] = self.limits ?: @{};
         state[@"session"] = [self sessionDiagnostic];
         state[@"remoteServer"] = self.remoteServer.snapshot ?: @{};
+        state[@"webcam"] = [self webcamSnapshot];
         state[@"openSSH"] = self.openSSHStatus ?: @{};
         completion(M7JSONSnapshot(state));
     });
@@ -620,7 +651,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.5.1", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.6.0", @"state":state });
             }];
         });
         return;
@@ -751,6 +782,18 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         self.videoFormat.selectedSegmentIndex = index; [self changeVideoFormat];
         return @{ @"control":control, @"value":text };
     }
+    if ([control isEqual:@"webcamFormat"]) {
+        if (self.webcamRequested || self.webcamEnabled) {
+            if (error) *error = @"Pare a webcam antes de alterar webcamFormat.";
+            return nil;
+        }
+        NSInteger index = [text isEqual:@"horizontal"] ? 0 : [text isEqual:@"vertical"] ? 1 : -1;
+        if (index < 0) { if (error) *error = @"webcamFormat aceita horizontal ou vertical."; return nil; }
+        BOOL changed = self.webcamFormat.selectedSegmentIndex != index;
+        self.webcamFormat.selectedSegmentIndex = index;
+        if (changed) [self changeWebcamFormat];
+        return @{ @"control":control, @"value":text, @"changed":@(changed) };
+    }
     if ([control isEqual:@"tracking"]) {
         if (!number || !self.trackingSwitch.enabled) { if (error) *error = @"Tracking está indisponível agora."; return nil; }
         self.trackingSwitch.on = number.boolValue; [self changeTracking];
@@ -811,6 +854,20 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         completion(202, @{ @"ok":@YES, @"accepted":@YES, @"command":command });
         return;
     }
+    if ([command isEqual:@"webcam.start"] || [command isEqual:@"webcam.stop"]) {
+        BOOL start = [command isEqual:@"webcam.start"];
+        if (start && (!self.configured || self.closing || self.captureBusy || self.comparisonActive)) {
+            completion(409, @{ @"ok":@NO,
+                @"error":@"A sessão da câmera não está livre para iniciar a webcam." });
+            return;
+        }
+        BOOL changed = self.webcamSwitch.on != start;
+        self.webcamSwitch.on = start;
+        if (changed) [self changeWebcam];
+        completion(202, @{ @"ok":@YES, @"accepted":@YES, @"command":command,
+            @"changed":@(changed), @"format":self.webcamVertical ? @"vertical" : @"horizontal" });
+        return;
+    }
     if ([command isEqual:@"photo.retry"] || [command isEqual:@"videos.retry"]) {
         dispatch_async(self.sessionQueue, ^{
             if ([command isEqual:@"photo.retry"]) {
@@ -849,7 +906,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.5.1";
+    self.captureTrace[@"version"] = @"0.6.0";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -961,7 +1018,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.5.1";
+    diagnostic[@"version"] = @"0.6.0";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -1007,6 +1064,130 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     });
     [self message:enabled ? @"Rastreamento de pessoa ativo; o círculo fica verde ao detectar."
         : @"Rastreamento desligado; o Reframe voltou ao centro."];
+}
+
+- (NSDictionary *)webcamSnapshot {
+    __block NSDictionary *server = @{};
+    __block NSDictionary *lastError = @{};
+    dispatch_sync(self.webcamQueue, ^{
+        server = self.webcamServer.snapshot ?: @{};
+        lastError = self.lastWebcamError ?: @{};
+    });
+    BOOL vertical = self.webcamVertical;
+    return @{ @"requested":@(self.webcamRequested), @"enabled":@(self.webcamEnabled),
+        @"encoding":@(self.webcamEncoding),
+        @"format":vertical ? @"vertical" : @"horizontal",
+        @"width":vertical ? @720 : @1280, @"height":vertical ? @1280 : @720,
+        @"fps":@10, @"jpegQuality":@.72, @"videoOnly":@YES,
+        @"usesCameraControls":@YES, @"trackingReframe":@(self.trackingEnabled),
+        @"busyDrops":@(self.webcamBusyDrops), @"lastError":lastError, @"server":server };
+}
+
+- (void)changeWebcamFormat {
+    BOOL vertical = self.webcamFormat.selectedSegmentIndex == 1;
+    self.webcamVertical = vertical;
+    NSString *format = vertical ? @"vertical" : @"horizontal";
+    dispatch_async(self.sessionQueue, ^{
+        [self recordControlChange:@"webcamFormat" details:@{ @"format":format,
+            @"width":vertical ? @720 : @1280,
+            @"height":vertical ? @1280 : @720 }];
+    });
+    [self message:[NSString stringWithFormat:@"Webcam %@; o próximo frame usa o novo recorte.",
+        vertical ? @"9:16" : @"16:9"]];
+}
+
+- (void)changeWebcam {
+    BOOL enabled = self.webcamSwitch.on;
+    self.webcamRequested = enabled;
+    if (!enabled) {
+        self.webcamEnabled = NO;
+        dispatch_async(self.webcamQueue, ^{
+            [self.webcamServer stop];
+            NSDictionary *snapshot = self.webcamServer.snapshot ?: @{};
+            dispatch_async(self.sessionQueue, ^{
+                [self recordSessionEvent:@"webcamStopped" details:@{ @"server":snapshot }];
+            });
+            dispatch_async(dispatch_get_main_queue(), ^{ [self message:@"Webcam desligada."]; });
+        });
+        return;
+    }
+    self.webcamSwitch.enabled = NO;
+    dispatch_async(self.sessionQueue, ^{
+        if (!self.webcamRequested) return;
+        BOOL outputReady = self.configured && [self.session.outputs containsObject:self.videoOutput];
+        if (!outputReady && !self.videoModeActive && !self.closing)
+            outputReady = [self configurePeakingOutput:YES];
+        if (!outputReady) {
+            self.webcamRequested = NO;
+            [self recordSessionEvent:@"webcamStartFailed" details:@{
+                @"reason":@"videoOutputUnavailable", @"session":[self sessionDiagnostic] }];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.webcamEnabled = NO; self.webcamSwitch.on = NO;
+                [self enableControls:self.configured && self.session.isRunning];
+                [self message:@"Webcam indisponível: a saída de vídeo não está ativa."];
+            });
+            return;
+        }
+        dispatch_async(self.webcamQueue, ^{
+            if (!self.webcamRequested) return;
+            NSError *error = nil;
+            BOOL ready = [self.webcamServer start:&error];
+            if (ready && !self.webcamRequested) { [self.webcamServer stop]; ready = NO; }
+            NSDictionary *snapshot = self.webcamServer.snapshot ?: @{};
+            self.lastWebcamError = error ? M7ErrorDetails(error) : @{};
+            if (!ready) self.webcamRequested = NO;
+            self.webcamEnabled = ready;
+            dispatch_async(self.sessionQueue, ^{
+                [self recordSessionEvent:ready ? @"webcamStarted" : @"webcamStartFailed"
+                    details:@{ @"server":snapshot, @"error":M7ErrorDetails(error),
+                        @"format":self.webcamVertical ? @"vertical" : @"horizontal" }];
+            });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!self.webcamRequested) return;
+                self.webcamSwitch.on = ready;
+                [self enableControls:self.configured && self.session.isRunning];
+                [self message:ready ? @"Webcam pronta; conecte o cliente Linux pelo SSH." :
+                    [NSString stringWithFormat:@"Webcam indisponível: %@",
+                        error.localizedDescription ?: @"erro no socket"]];
+            });
+        });
+    });
+}
+
+- (void)scheduleWebcamForSampleBuffer:(CMSampleBufferRef)sample {
+    if (!self.webcamEnabled || self.webcamServer.clientCount == 0) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - self.lastWebcamTime < .1) return;
+    if (self.webcamEncoding) { ++self.webcamBusyDrops; return; }
+    CVPixelBufferRef pixel = CMSampleBufferGetImageBuffer(sample);
+    if (!pixel) return;
+    self.lastWebcamTime = now; self.webcamEncoding = YES;
+    BOOL vertical = self.webcamVertical;
+    CGPoint center = self.trackingEnabled ? self.trackingCenter : CGPointMake(.5, .5);
+    CVPixelBufferRetain(pixel);
+    dispatch_async(self.webcamQueue, ^{
+        @autoreleasepool {
+            NSError *error = nil;
+            NSData *jpeg = [self.webcamEncoder JPEGDataForPixelBuffer:pixel vertical:vertical
+                normalizedCenter:center error:&error];
+            CVPixelBufferRelease(pixel);
+            if (jpeg.length && self.webcamEnabled) {
+                self.lastWebcamError = @{};
+                [self.webcamServer publishJPEG:jpeg width:vertical ? 720 : 1280
+                    height:vertical ? 1280 : 720];
+            } else if (error) {
+                self.lastWebcamError = M7ErrorDetails(error);
+                CFTimeInterval errorNow = CACurrentMediaTime();
+                if (errorNow - self.lastWebcamErrorLogTime >= 2) {
+                    self.lastWebcamErrorLogTime = errorNow;
+                    dispatch_async(self.sessionQueue, ^{
+                        [self recordSessionEvent:@"webcamEncodeError" details:M7ErrorDetails(error)];
+                    });
+                }
+            }
+            self.webcamEncoding = NO;
+        }
+    });
 }
 
 - (void)changeCaptureMode {
@@ -1125,6 +1306,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.captureMode.enabled = ready && !changingTopology;
     self.videoFormat.enabled = ready && self.videoModeActive && !changingTopology;
     self.trackingSwitch.enabled = ready && self.videoModeActive && !changingTopology;
+    self.webcamSwitch.enabled = ready && !changingTopology;
+    self.webcamFormat.enabled = ready && !self.webcamRequested && !self.webcamEnabled;
     self.lens.enabled = ready && !changingTopology;
     self.exposureMode.enabled = ready; self.focusMode.enabled = ready;
     BOOL manual = ready && self.exposureMode.selectedSegmentIndex == 1 && [self.limits[@"manualExposure"] boolValue];
@@ -1343,7 +1526,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.5.1";
+    self.videoTrace[@"version"] = @"0.6.0";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -1956,6 +2139,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"captureBusy":@(self.captureBusy), @"videoMode":@(self.videoModeActive),
         @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
         @"trackingEnabled":@(self.trackingEnabled), @"trackingPending":@(self.trackingPending),
+        @"webcamEnabled":@(self.webcamEnabled), @"webcamEncoding":@(self.webcamEncoding),
+        @"webcamRequested":@(self.webcamRequested),
         @"audioAttached":@([self.session.outputs containsObject:self.audioOutput]),
         @"pendingExposure":@(self.pendingExposure),
         @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID),
@@ -1991,9 +2176,10 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.5.1", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.6.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
+        @"webcam":[self webcamSnapshot],
         @"remoteServer":self.remoteServer.snapshot ?: @{}, @"remoteEvents":self.remoteEvents ?: @[],
         @"openSSH":self.openSSHStatus ?: @{},
         @"pendingVideos":pendingVideoDetails,
@@ -2017,7 +2203,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"rawJPEGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.5.1", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.6.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -2065,7 +2251,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.5.1" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.6.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
@@ -2120,6 +2306,12 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         self.videoRecording || self.videoProcessing || self.pendingPhoto || self.closing) {
         [self recordSessionEvent:@"configurationRejected" details:[self sessionDiagnostic]];
         [self message:@"A sessão não está livre para reconfigurar. Consulte o diagnóstico."]; return NO;
+    }
+    if (!attached && self.webcamEnabled) {
+        [self recordSessionEvent:@"configurationRejected" details:@{
+            @"reason":@"webcamEnabled", @"session":[self sessionDiagnostic] }];
+        [self message:@"Desligue a Webcam antes do teste RAW sem saída de vídeo."];
+        return NO;
     }
     self.photoOnlyRequested = !attached;
     atomic_store(&M7PhotoOnlyPreferred, !attached);
@@ -2263,6 +2455,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         }
         if (output != self.videoOutput) return;
         [self scheduleTrackingForSampleBuffer:sample];
+        [self scheduleWebcamForSampleBuffer:sample];
         CFTimeInterval now = CACurrentMediaTime();
         if (!self.peakingEnabled || self.overlayPending || now - self.lastPeakingTime < .1) return;
         self.lastPeakingTime = now;
@@ -2313,6 +2506,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (self.closing) return;
     if ([note.name isEqualToString:UIApplicationWillResignActiveNotification]) {
         self.peakingView.image = nil;
+        if (self.webcamSwitch.on) { self.webcamSwitch.on = NO; [self changeWebcam]; }
         [self stopRemoteServerReason:@"applicationBackground"];
         self.remoteLabel.textColor = UIColor.systemYellowColor;
         self.remoteLabel.text = [NSString stringWithFormat:@"Pausado · PIN %@", self.remotePIN];
@@ -2425,6 +2619,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             return;
         }
         self.closing = YES;
+        self.webcamRequested = NO;
+        self.webcamEnabled = NO;
+        dispatch_async(self.webcamQueue, ^{ [self.webcamServer stop]; });
         [self stopRemoteServerReason:@"controllerClosed"];
         [self.session stopRunning];
         [self.videoOutput setSampleBufferDelegate:nil queue:NULL];
@@ -2442,6 +2639,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 
 - (void)dealloc {
     [_remoteServer stop];
+    [_webcamServer stop];
     [_timer invalidate];
     for (id observer in _observers) [NSNotificationCenter.defaultCenter removeObserver:observer];
 }

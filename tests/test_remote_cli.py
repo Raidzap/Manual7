@@ -98,6 +98,39 @@ class RemoteCLITests(unittest.TestCase):
         with self.assertRaises(ValueError):
             REMOTE.tunnel_forwarding(17837, "tmp/Manual7.sock")
 
+    def test_wait_webcam_sends_pin(self):
+        REMOTE.wait_webcam(self.url + "/v1/webcam.mjpg", "246810", timeout=1)
+        self.assertEqual(Handler.seen_pin, "246810")
+
+    def test_ffmpeg_feeds_v4l2loopback_with_authenticated_mjpeg(self):
+        command = REMOTE.webcam_ffmpeg_command(
+            "/usr/bin/ffmpeg", REMOTE.DEFAULT_WEBCAM_URL, "246810",
+            pathlib.Path("/dev/video10"))
+        self.assertEqual(command[0], "/usr/bin/ffmpeg")
+        self.assertIn("X-Manual7-PIN: 246810\r\n", command)
+        self.assertIn("mpjpeg", command)
+        self.assertEqual(command[-2:], ["v4l2", "/dev/video10"])
+
+    def test_tunnel_opens_api_and_webcam_forwards(self):
+        with mock.patch.object(REMOTE, "choose_ssh_port", return_value=22), \
+             mock.patch.object(REMOTE.subprocess, "call", return_value=0) as call:
+            self.assertEqual(REMOTE.main(["tunnel", "iphone.local"]), 0)
+        argv = call.call_args.args[0]
+        forwards = [argv[index + 1] for index, value in enumerate(argv) if value == "-L"]
+        self.assertEqual(forwards, [
+            "127.0.0.1:17837:/var/tmp/Manual7-api.sock",
+            "127.0.0.1:17838:/var/tmp/Manual7-webcam.sock"])
+
+    def test_webcam_start_sets_format_then_starts(self):
+        with mock.patch.object(REMOTE, "command",
+                               side_effect=[{"ok": True}, {"ok": True}, {"ok": True}]) as command:
+            self.assertEqual(REMOTE.main(["--pin", "246810", "webcam", "start",
+                                          "--format", "vertical"]), 0)
+        self.assertEqual(command.call_args_list[0].args[2], "webcam.stop")
+        self.assertEqual(command.call_args_list[1].args[2], "set")
+        self.assertEqual(command.call_args_list[1].kwargs["control"], "webcamFormat")
+        self.assertEqual(command.call_args_list[2].args[2], "webcam.start")
+
 
 if __name__ == "__main__":
     unittest.main()

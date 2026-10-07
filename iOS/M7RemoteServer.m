@@ -328,7 +328,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         @synchronized (self) { ++self.acceptedRequests; self.lastRequestAt = NSDate.date.timeIntervalSince1970; }
         NSString *path = request[@"path"];
         if ([path isEqual:@"/v1/ping"]) {
-            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.5.1",
+            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.6.0",
                 @"transport":self.transport ?: @"", @"port":@(self.port),
                 @"authentication":@"X-Manual7-PIN" } socket:client];
             return;

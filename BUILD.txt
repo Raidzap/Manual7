@@ -1,25 +1,28 @@
-Manual7 0.5.1 — registro de build
-Data UTC: 2026-10-06T21:16:19Z
+Manual7 0.6.0 — registro de build
+Data UTC: 2026-10-07T14:35:31Z
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos.
-Testes Linux: 21 aprovados (8 Core/C, 3 contratos de callbacks com SDK iOS, 9 do cliente remoto Python e 1 contrato do pacote).
-Compilação: controlador, servidor remoto, detector OpenSSH, formato, gravador, Reframe, rastreador e controles sem diagnósticos.
-Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, Reframe central/dinâmico, gravador, Vision, servidor remoto TCP/Unix, permissão e limpeza do socket, detector OpenSSH e Core aprovados.
-CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37532588783
-Commit de código testado: 1cd7fb6d20131160ae5ba191fb8c8f2acea07571
+Testes Linux: 25 aprovados (8 Core/C, 3 contratos de callbacks com SDK iOS, 13 do cliente remoto Python e 1 contrato do pacote).
+Compilação: controlador, servidores remoto/MJPEG, encoder Core Image, detector OpenSSH, formato, gravador, Reframe, rastreador e controles sem diagnósticos.
+Análise estática: controlador, servidor remoto, servidor MJPEG e encoder sem diagnósticos.
+Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, Reframe central/dinâmico, gravador, Vision, servidor remoto TCP/Unix, encoder 16:9/9:16, servidor multipart MJPEG, permissões/limpeza dos sockets, detector OpenSSH e Core aprovados.
+CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37637858097
+Commit de código testado: cabdbf186db43f145fd67672af84cf213e2ccb49
 Controle remoto: HTTP/JSON em `/var/tmp/Manual7-api.sock`, modo 0600, PIN aleatório por painel, timeout, limite de corpo, contadores e remoção no segundo plano/fechamento.
-Cliente Linux: túnel SSH da porta local 127.0.0.1:17837 para o socket Unix remoto, estado, diagnóstico, foto, gravação, repetição de salvamento e alteração de todos os controles M7 expostos.
+Cliente Linux: túnel SSH duplo da API em 127.0.0.1:17837 e MJPEG em 127.0.0.1:17838, estado, diagnóstico, foto, gravação, webcam, repetição de salvamento e alteração dos controles M7 expostos.
 OpenSSH: dependência oficial `openssh-server` do Procursus, detecção de `/var/jb`, plist, configuração, chaves e portas 22/2222; nenhum segredo incluído.
 Cliente SSH: seleção automática entre as portas 22 e 2222, com opção de porta explícita.
 Registro remoto: até 256 eventos no diagnóstico; comandos durante vídeo são correlacionados com lastVideo; PIN não é registrado.
 Vídeo: master H.264 em tempo real, AAC quando disponível, formato 4:3 preferencial a 30 fps.
 Reframe: 1920 × 1080, 1080 × 1920 ou ambos, central ou rastreado, derivados do mesmo master.
 Rastreamento: Vision de pessoa/tronco superior com rosto como fallback, máximo de 5 Hz, suavização e rampas temporais.
+Webcam: MJPEG autenticado em `/var/tmp/Manual7-webcam.sock`, modo 0600, 1280 × 720 ou 720 × 1280, alvo de 10 fps, qualidade 0,72, recorte central ou rastreado e somente vídeo.
+Linux/V4L2: cliente FFmpeg para `v4l2loopback`, formato estável por conexão e parada automática; focus peaking não é queimado nos frames.
 Estado informado pelo usuário: JPEG salva. RAW 0.1.5 falha com −11800 / −12780; teste RAW+JPEG 0.1.6 ainda não executado.
 Diagnóstico físico 0.5.0: `bind(AF_INET)` foi negado com POSIX 1/EPERM no processo Câmera; o relatório inicialmente descrevia o erro como porta ocupada.
-Validação física 0.5.1: ainda não realizada; precisa confirmar criação/acesso do socket Unix, encaminhamento OpenSSH, câmera, PhotoKit, térmica e desempenho no A10.
-SHA-256 do .deb: 7318ba279fef69ae6211d81b234841fc9538a77429cdaed34b8f422aa40ab18e
+Validação física 0.6.0: ainda não realizada; precisa confirmar sockets Unix, encaminhamento OpenSSH, MJPEG/V4L2, câmera, PhotoKit, latência, térmica e desempenho do Core Image/Vision no A10.
+SHA-256 do .deb: a7c0dee8cf25d8a5a670b296b983a95d76d2b8c9aa29799da791733098bb4ea6

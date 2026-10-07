@@ -214,7 +214,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 A suíte da 0.6.0 também compila e exercita os transportes TCP e Unix da API, o socket MJPEG, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comando FFmpeg do cliente Python. A validação no iPhone continua necessária.
 
-A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37532588783).
+A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37637858097).
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 

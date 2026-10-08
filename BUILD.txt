@@ -1,15 +1,15 @@
-Manual7 0.7.1 — registro de build
-Data UTC: 2026-10-08T23:17:36Z
+Manual7 0.7.2 — registro de build
+Data UTC: 2026-10-08T23:38:49Z
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
-Testes Linux: 31 aprovados, incluindo Core/C, contratos de callbacks com SDK iOS, clientes Python e contrato do pacote.
+Testes Linux: 32 aprovados, incluindo Core/C, contratos de callbacks com SDK iOS, clientes Python e contrato do pacote.
 Teste RAW nativo: seleção pela interseção disponível/Bayer/DNG, FourCC rgg4 e snapshot JSON adicionado ao CI macOS.
-CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/37858670404
-Commit da implementação testada: 1ce7d9e623534665e345824a3195b66ea5e8edca
+CI macOS: pendente para a implementação 0.7.2.
+Commit da implementação testada: d4e92778448be9ef5a12109827562566e249b6f0
 RAW físico anterior: RAW e RAW+JPEG falharam com AVFoundation -11800 / OSStatus -12780 antes de produzir pixel buffer ou bytes.
 Correção 0.7.1: valida AVFileTypeDNG e supportedRawPhotoPixelFormatTypesForFileType, solicita DNG explícito, desliga estabilização automática e usa prioridade Speed.
 Preparação RAW: setPreparedPhotoSettingsArray antecipa buffers RAW e RAW+JPEG após cada troca de lente/topologia; o disparo espera preparação e estabilização do sensor por até três segundos.
@@ -17,9 +17,12 @@ Diagnóstico RAW: inventário de contêineres e formatos, FourCC, classificaçã
 Pareamento QR: script Linux com callback temporário, IPv4 RFC1918/link-local, token aleatório de uso único, validade configurável, limite de 16 KiB, Content-Type JSON e derivação do IP pelo peer da conexão.
 Leitor M7: botão Ler QR do PC, Vision limitado a 3 Hz, timeout de 30 s, validação de URI/esquema/endereço/porta/token, espera de conectividade e cancelamento no segundo plano, interrupção, fechamento ou ação do usuário.
 Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe o payload pela entrada padrão. O PIN é entregue somente no corpo autenticado do callback e exibido no terminal para os comandos locais.
-Controle remoto: HTTP/JSON em /var/tmp/Manual7-api.sock, modo 0600, PIN aleatório por painel, timeout, limite de corpo, contadores e remoção no segundo plano/fechamento.
+Controle remoto: HTTP/JSON em socket Unix modo 0600, priorizando NSTemporaryDirectory e mantendo /var/tmp e /tmp como fallbacks; PIN aleatório por painel, timeout, limite de corpo, contadores e remoção no segundo plano/fechamento.
+Diagnóstico remoto: cada bind registra caminho, diretório, sucesso, operação e código POSIX em remoteBindAttempts e remoteEvents.
+Pareamento dinâmico: o callback envia os caminhos efetivos; o cliente restringe-os ao temporário do contêiner ou fallbacks conhecidos e usa os valores nos dois encaminhamentos SSH.
+Limite Unix: nomes m7a/m7w preservam o caminho completo abaixo dos 104 bytes de sockaddr_un no contêiner com UUID.
 OpenSSH: dependência oficial openssh-server do Procursus, detecção de /var/jb, plist, configuração, chaves e portas 22/2222; nenhum segredo incluído.
 Vídeo/Reframe: master H.264 4:3 a 30 fps, AAC quando disponível, exportação 1920x1080, 1080x1920 ou ambas, central ou rastreada.
-Webcam: MJPEG autenticado em /var/tmp/Manual7-webcam.sock, modo 0600, 1280x720 ou 720x1280, alvo de 10 fps, recorte central ou rastreado e somente vídeo.
-Validação física 0.7.1: pendente; executar Testar RAW DNG explícito e copiar o relatório automático mesmo se a foto for salva.
-SHA-256 do .deb: 9efd21206702fe2ef6c140e766d73f6862bfe2ffe3d5cb1597b38155000728a9
+Webcam: MJPEG autenticado no mesmo diretório selecionado para a API, modo 0600, 1280x720 ou 720x1280, alvo de 10 fps, recorte central ou rastreado e somente vídeo.
+Validação física 0.7.2: pendente; confirmar API Unix, parear pelo QR, executar ping/state e testar RAW DNG explícito.
+SHA-256 do .deb: 89668dab092dfced5e07532749fad7f0959389977ccbc248e798cfad5bfb4f3a

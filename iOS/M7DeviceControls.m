@@ -1,4 +1,5 @@
 #import "M7DeviceControls.h"
+#import "M7RAWConfiguration.h"
 #import "../Core/M7Math.h"
 #import <math.h>
 #import <limits.h>
@@ -121,22 +122,64 @@ static BOOL M7Fail(NSError **error, NSString *reason) {
     } @finally { [d unlockForConfiguration]; }
 }
 
+- (NSDictionary *)rawCompatibilityForOutput:(AVCapturePhotoOutput *)output {
+    NSArray<NSNumber *> *available = output.availableRawPhotoPixelFormatTypes ?: @[];
+    NSArray<AVFileType> *rawFileTypes = output.availableRawPhotoFileTypes ?: @[];
+    BOOL hasDNG = [rawFileTypes containsObject:AVFileTypeDNG];
+    NSArray<NSNumber *> *dngFormats = hasDNG ?
+        [output supportedRawPhotoPixelFormatTypesForFileType:AVFileTypeDNG] : @[];
+    NSMutableSet<NSNumber *> *bayer = [NSMutableSet new];
+    for (NSNumber *format in available)
+        if ([AVCapturePhotoOutput isBayerRAWPixelFormat:format.unsignedIntValue]) [bayer addObject:format];
+    NSNumber *selected = M7SelectCompatibleRAWFormat(available, dngFormats, bayer);
+    NSArray<AVFileType> *photoFileTypes = output.availablePhotoFileTypes ?: @[];
+    NSArray<AVVideoCodecType> *jpegCodecs = [photoFileTypes containsObject:AVFileTypeJPEG] ?
+        [output supportedPhotoCodecTypesForFileType:AVFileTypeJPEG] : @[];
+    return @{ @"availableRawFormats":M7DescribeRAWFormats(available, bayer),
+        @"availableRawFileTypes":rawFileTypes, @"dngAvailable":@(hasDNG),
+        @"dngRawFormats":M7DescribeRAWFormats(dngFormats, bayer),
+        @"selectedRawFormat":selected ?: @0,
+        @"selectedRawFourCC":selected ? M7RAWFourCC(selected.unsignedIntValue) : @"",
+        @"availablePhotoFileTypes":photoFileTypes,
+        @"jpegContainerAvailable":@([photoFileTypes containsObject:AVFileTypeJPEG]),
+        @"jpegCodecForContainer":@([jpegCodecs containsObject:AVVideoCodecTypeJPEG]) };
+}
+
 - (AVCapturePhotoSettings *)rawSettingsForOutput:(AVCapturePhotoOutput *)output
+    includeProcessedJPEG:(BOOL)includeJPEG diagnostic:(NSDictionary **)diagnostic
     error:(NSError **)error {
-    NSNumber *bayer = nil;
-    for (NSNumber *format in output.availableRawPhotoPixelFormatTypes) {
-        if ([AVCapturePhotoOutput isBayerRAWPixelFormat:format.unsignedIntValue]) {
-            bayer = format; break;
-        }
-    }
-    if (!bayer) {
-        M7Fail(error, @"RAW Bayer indisponível na sessão atual; selecione uma lente física.");
+    NSDictionary *compatibility = [self rawCompatibilityForOutput:output];
+    if (diagnostic) *diagnostic = compatibility;
+    if (![compatibility[@"dngAvailable"] boolValue]) {
+        M7Fail(error, @"O AVFoundation não ofereceu o contêiner DNG nesta sessão.");
         return nil;
     }
+    NSNumber *bayer = compatibility[@"selectedRawFormat"];
+    if (!bayer.unsignedIntValue) {
+        M7Fail(error, @"Nenhum Bayer RAW disponível também é compatível com DNG nesta sessão.");
+        return nil;
+    }
+    NSDictionary *processedFormat = nil;
+    AVFileType processedFileType = nil;
+    if (includeJPEG) {
+        if (![compatibility[@"jpegContainerAvailable"] boolValue] ||
+            ![compatibility[@"jpegCodecForContainer"] boolValue]) {
+            M7Fail(error, @"O par codec JPEG/contêiner JPEG não está disponível nesta sessão.");
+            return nil;
+        }
+        processedFormat = @{ AVVideoCodecKey:AVVideoCodecTypeJPEG };
+        processedFileType = AVFileTypeJPEG;
+    }
     AVCapturePhotoSettings *s = [AVCapturePhotoSettings
-        photoSettingsWithRawPixelFormatType:bayer.unsignedIntValue];
+        photoSettingsWithRawPixelFormatType:bayer.unsignedIntValue rawFileType:AVFileTypeDNG
+        processedFormat:processedFormat processedFileType:processedFileType];
     s.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationSpeed;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    s.autoStillImageStabilizationEnabled = NO;
+#pragma clang diagnostic pop
     s.flashMode = AVCaptureFlashModeOff;
+    s.highResolutionPhotoEnabled = NO;
     return s;
 }
 

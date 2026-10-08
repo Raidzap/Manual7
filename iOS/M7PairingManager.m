@@ -139,7 +139,7 @@ NSDictionary *M7ParsePairingPayload(NSString *payload, NSError **error) {
     deviceName = UIDevice.currentDevice.model ?: @"iPhone";
     systemVersion = UIDevice.currentDevice.systemVersion ?: @"";
 #endif
-    NSDictionary *body = @{ @"version":@"0.7.0", @"pin":pin,
+    NSDictionary *body = @{ @"version":@"0.7.1", @"pin":pin,
         @"preferredSSHPort":preferredSSHPort ?: @0,
         @"availableSSHPorts":availableSSHPorts ?: @[],
         @"apiSocket":@"/var/tmp/Manual7-api.sock",

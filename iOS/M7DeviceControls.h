@@ -23,9 +23,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setExposureBiasThirds:(NSInteger)thirds
     completion:(nullable void (^)(CMTime))completion error:(NSError **)error;
 // Call only with output connected to the same device/session.
-// Returned settings request a genuine Bayer RAW photo (DNG representation).
+// Returned settings request a genuine Bayer RAW photo in an explicitly
+// validated DNG container. The optional JPEG uses an explicitly validated
+// JPEG codec/container pair and is intended for the diagnostic comparison.
 - (nullable AVCapturePhotoSettings *)rawSettingsForOutput:(AVCapturePhotoOutput *)output
+    includeProcessedJPEG:(BOOL)includeJPEG diagnostic:(NSDictionary * _Nullable * _Nullable)diagnostic
     error:(NSError **)error;
+- (NSDictionary *)rawCompatibilityForOutput:(AVCapturePhotoOutput *)output;
 // Selects the best real-time 4:3 format at the requested frame rate. The
 // capture session owner must wrap this call in begin/commitConfiguration.
 - (nullable NSDictionary *)configureVideoFormatAtFPS:(NSInteger)fps error:(NSError **)error;

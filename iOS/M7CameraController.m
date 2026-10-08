@@ -1,5 +1,6 @@
 #import "M7CameraController.h"
 #import "M7DeviceControls.h"
+#import "M7RAWConfiguration.h"
 #import "M7JPEG.h"
 #import "M7Storage.h"
 #import "M7ErrorDetails.h"
@@ -166,6 +167,12 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (atomic) BOOL closing;
 @property (nonatomic) BOOL startedSetup;
 @property (nonatomic) BOOL captureBusy;
+@property (atomic) BOOL rawCaptureWaiting;
+@property (atomic) BOOL rawPreparationPending;
+@property (nonatomic) BOOL rawPrepared;
+@property (nonatomic) NSUInteger rawPreparationRevision;
+@property (nonatomic) NSUInteger rawWaitGeneration;
+@property (nonatomic) NSDictionary *rawPreparationReport;
 @property (nonatomic) BOOL pendingExposure;
 @property (nonatomic) BOOL pendingFocus;
 @property (nonatomic) NSUInteger exposureRevision;
@@ -446,6 +453,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             [self message:@"Acesso à câmera indisponível. Autorize a Câmera e reabra o M7."]; return;
         }
         self.photoOutput = [AVCapturePhotoOutput new];
+        self.photoOutput.maxPhotoQualityPrioritization = AVCapturePhotoQualityPrioritizationSpeed;
         self.photoOutput.highResolutionCaptureEnabled = YES;
         self.videoOutput = [AVCaptureVideoDataOutput new];
         self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
@@ -616,7 +624,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"webcam":@(self.webcamSwitch.on), @"webcamFormat":webcamNames[webcamIndex],
         @"peaking":@(self.peakingSwitch.on), @"peakingThreshold":@(self.thresholdSlider.value),
         @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
-        @"captureBusy":@(self.captureBusy), @"configured":@(self.configured),
+        @"captureBusy":@(self.captureBusy), @"rawCaptureWaiting":@(self.rawCaptureWaiting),
+        @"configured":@(self.configured),
         @"available":@{ @"captureMode":@(self.captureMode.enabled), @"lens":@(self.lens.enabled),
             @"exposure":@(self.exposureMode.enabled), @"iso":@(self.isoSlider.enabled),
             @"shutter":@(self.shutterSlider.enabled), @"focus":@(self.focusMode.enabled),
@@ -667,7 +676,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.0", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.1", @"state":state });
             }];
         });
         return;
@@ -922,7 +931,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.0";
+    self.captureTrace[@"version"] = @"0.7.1";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -981,6 +990,59 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [self presentViewController:menu animated:YES completion:nil];
 }
 
+// RAW capture can require extra buffers on older devices. Apple documents this
+// preparation as optional, but doing it after every input/topology change makes
+// allocation failures visible before the shutter request reaches the sensor.
+- (void)prepareRAWPipeline {
+    NSUInteger revision = ++self.rawPreparationRevision;
+    NSError *error = nil;
+    NSDictionary *compatibility = nil;
+    AVCapturePhotoSettings *raw = [self.controls rawSettingsForOutput:self.photoOutput
+        includeProcessedJPEG:NO diagnostic:&compatibility error:&error];
+    if (!raw) {
+        self.rawPreparationPending = NO;
+        self.rawPrepared = NO;
+        self.rawPreparationReport = @{ @"prepared":@NO, @"revision":@(revision),
+            @"compatibility":compatibility ?: @{}, @"error":M7ErrorDetails(error) };
+        [self recordSessionEvent:@"rawPreparationUnavailable" details:self.rawPreparationReport];
+        return;
+    }
+    NSMutableArray<AVCapturePhotoSettings *> *settings = [NSMutableArray arrayWithObject:raw];
+    AVCapturePhotoSettings *rawJPEG = [self.controls rawSettingsForOutput:self.photoOutput
+        includeProcessedJPEG:YES diagnostic:nil error:nil];
+    if (rawJPEG) [settings addObject:rawJPEG];
+    self.rawPreparationPending = YES;
+    self.rawPrepared = NO;
+    self.rawPreparationReport = @{ @"prepared":@NO, @"pending":@YES,
+        @"revision":@(revision), @"settingsCount":@(settings.count),
+        @"compatibility":compatibility ?: @{} };
+    [self recordSessionEvent:@"rawPreparationRequested" details:self.rawPreparationReport];
+    __weak typeof(self) weakSelf = self;
+    dispatch_queue_t callbackQueue = self.sessionQueue;
+    @try {
+        [self.photoOutput setPreparedPhotoSettingsArray:settings completionHandler:^(BOOL prepared, NSError *prepareError) {
+            dispatch_async(callbackQueue, ^{
+                typeof(self) owner = weakSelf;
+                if (!owner || revision != owner.rawPreparationRevision) return;
+                owner.rawPreparationPending = NO;
+                owner.rawPrepared = prepared;
+                owner.rawPreparationReport = @{ @"prepared":@(prepared), @"pending":@NO,
+                    @"revision":@(revision), @"settingsCount":@(settings.count),
+                    @"compatibility":compatibility ?: @{}, @"error":M7ErrorDetails(prepareError) };
+                [owner recordSessionEvent:@"rawPreparationFinished" details:owner.rawPreparationReport];
+            });
+        }];
+    } @catch (NSException *exception) {
+        self.rawPreparationPending = NO;
+        self.rawPrepared = NO;
+        error = [self captureExceptionError:exception];
+        self.rawPreparationReport = @{ @"prepared":@NO, @"pending":@NO,
+            @"revision":@(revision), @"settingsCount":@(settings.count),
+            @"compatibility":compatibility ?: @{}, @"error":M7ErrorDetails(error) };
+        [self recordSessionEvent:@"rawPreparationException" details:self.rawPreparationReport];
+    }
+}
+
 - (BOOL)selectDevice:(AVCaptureDeviceType)type error:(NSError **)error {
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithDeviceType:type mediaType:AVMediaTypeVideo position:AVCaptureDevicePositionBack];
     if (!device) {
@@ -1030,12 +1092,15 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         CMTimeGetSeconds(device.activeFormat.maxExposureDuration), &selected);
     float isoPosition = (log(device.ISO) - log(device.activeFormat.minISO)) /
         fmax(1e-9, log(device.activeFormat.maxISO) - log(device.activeFormat.minISO));
-    BOOL raw = [self.controls rawSettingsForOutput:self.photoOutput error:nil] != nil;
+    NSDictionary *rawCompatibility = [self.controls rawCompatibilityForOutput:self.photoOutput];
+    BOOL raw = [rawCompatibility[@"selectedRawFormat"] unsignedIntValue] != 0;
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.7.0";
+    diagnostic[@"rawCompatibility"] = rawCompatibility;
+    diagnostic[@"version"] = @"0.7.1";
     self.lensDiagnostic = diagnostic;
+    [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1473,7 +1538,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (self.closing) return;
     dispatch_async(self.sessionQueue, ^{
         AVCaptureDevice *d = self.input.device;
-        BOOL ready = self.configured && self.session.isRunning && !self.captureBusy && !self.videoProcessing;
+        BOOL ready = self.configured && self.session.isRunning && !self.captureBusy &&
+            !self.rawCaptureWaiting && !self.videoProcessing;
         BOOL pending = self.pendingPhoto != nil;
         BOOL importing = pending && [self.photosInFlight containsObject:self.pendingPhoto.filename];
         BOOL settled = !self.pendingExposure && !self.pendingFocus;
@@ -1482,13 +1548,15 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         NSString *readout = d ? [NSString stringWithFormat:@"ISO %.0f · %@ · f/%.1f\nEV %+.2f · Medidor %+.2f EV · Foco %.2f", d.ISO, shutter, d.lensAperture, d.exposureTargetBias, d.exposureTargetOffset, d.lensPosition] : @"Sem câmera ativa";
         dispatch_async(dispatch_get_main_queue(), ^{
             [self enableControls:ready && !pending];
-            self.closeButton.enabled = !self.videoRecording && !self.videoProcessing && !self.captureBusy;
+            self.closeButton.enabled = !self.videoRecording && !self.videoProcessing &&
+                !self.captureBusy && !self.rawCaptureWaiting;
             self.shutterButton.enabled = self.videoRecording ? YES : pending ? !importing : ready && settled;
             NSString *title;
             if (self.videoRecording) {
                 NSInteger elapsed = MAX(0, (NSInteger)(CACurrentMediaTime() - self.videoStartedAt));
                 title = [NSString stringWithFormat:@"■  PARAR · %02ld:%02ld", (long)(elapsed/60), (long)(elapsed%60)];
-            } else if (self.videoProcessing) title = @"Processando e salvando vídeo…";
+            } else if (self.rawCaptureWaiting) title = @"Preparando DNG e sensor…";
+            else if (self.videoProcessing) title = @"Processando e salvando vídeo…";
             else if (importing) title = @"Salvando no Fotos…";
             else if (pending) title = @"SALVAR FOTO PENDENTE";
             else if (ready && !settled) title = @"Aguardando foco/exposição…";
@@ -1675,7 +1743,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.0";
+    self.videoTrace[@"version"] = @"0.7.1";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -1962,8 +2030,59 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     });
 }
 
-// sessionQueue only. Test configuration and submission run in one operation.
+// sessionQueue only. Give RAW resource preparation and sensor convergence a
+// bounded window. A timeout still submits because Apple's preparation hint is
+// optional and continuous autofocus may remain active in a moving scene.
 - (void)captureRAW:(BOOL)raw longEdge:(NSUInteger)longEdge {
+    if (!raw) { [self submitCaptureRAW:NO longEdge:longEdge]; return; }
+    if (self.rawCaptureWaiting) {
+        [self message:@"O disparo RAW anterior ainda está sendo preparado."];
+        return;
+    }
+    self.rawCaptureWaiting = YES;
+    NSUInteger generation = ++self.rawWaitGeneration;
+    [self waitForRAWReadinessAndCaptureLongEdge:longEdge generation:generation
+        startedAt:CACurrentMediaTime() first:YES];
+}
+
+- (void)waitForRAWReadinessAndCaptureLongEdge:(NSUInteger)longEdge
+    generation:(NSUInteger)generation startedAt:(CFTimeInterval)startedAt first:(BOOL)first {
+    if (generation != self.rawWaitGeneration || self.closing) {
+        self.rawCaptureWaiting = NO;
+        [self completeComparison:@"cancelledWhilePreparing"];
+        return;
+    }
+    AVCaptureDevice *device = self.input.device;
+    CFTimeInterval elapsed = CACurrentMediaTime() - startedAt;
+    BOOL sensorAdjusting = device.isAdjustingExposure || device.isAdjustingFocus ||
+        self.pendingExposure || self.pendingFocus;
+    BOOL waiting = self.rawPreparationPending || sensorAdjusting;
+    if (waiting && elapsed < 3.0) {
+        if (first) {
+            [self recordSessionEvent:@"rawCaptureWaiting" details:@{
+                @"preparationPending":@(self.rawPreparationPending),
+                @"adjustingExposure":@(device.isAdjustingExposure),
+                @"adjustingFocus":@(device.isAdjustingFocus),
+                @"pendingExposure":@(self.pendingExposure), @"pendingFocus":@(self.pendingFocus) }];
+            [self message:@"Preparando DNG e aguardando o sensor…"];
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), self.sessionQueue, ^{
+            [self waitForRAWReadinessAndCaptureLongEdge:longEdge generation:generation
+                startedAt:startedAt first:NO];
+        });
+        return;
+    }
+    self.rawCaptureWaiting = NO;
+    [self recordSessionEvent:@"rawCaptureReady" details:@{
+        @"waitMilliseconds":@(llround(elapsed * 1000.0)), @"timedOut":@(waiting),
+        @"preparationPending":@(self.rawPreparationPending), @"prepared":@(self.rawPrepared),
+        @"adjustingExposure":@(device.isAdjustingExposure), @"adjustingFocus":@(device.isAdjustingFocus),
+        @"preparation":self.rawPreparationReport ?: @{} }];
+    [self submitCaptureRAW:YES longEdge:longEdge];
+}
+
+// sessionQueue only. Test configuration and submission run in one operation.
+- (void)submitCaptureRAW:(BOOL)raw longEdge:(NSUInteger)longEdge {
 
         if (self.pendingPhoto) { [self savePhotoToPhotos:self.pendingPhoto]; return; }
         if (!self.configured || !self.session.isRunning || self.captureBusy ||
@@ -1976,8 +2095,10 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         self.captureID = 0;
         self.captureTrace = [NSMutableDictionary new];
         if (self.comparisonActive) self.captureTrace[@"comparisonID"] = self.comparisonReport[@"id"];
+        NSDictionary *rawCompatibility = raw ? [self.controls rawCompatibilityForOutput:self.photoOutput] : @{};
         [self recordCaptureStage:@"requested" details:@{@"raw":@(raw), @"jpegLongEdge":@(longEdge),
             @"device":self.input.device.deviceType ?: @"", @"highResolutionEnabled":@(self.photoOutput.isHighResolutionCaptureEnabled),
+            @"rawCompatibility":rawCompatibility, @"rawPreparation":self.rawPreparationReport ?: @{},
             @"session":[self sessionDiagnostic]}];
         NSError *error = nil;
         // A denied local backup must never prevent AVFoundation/PhotoKit.
@@ -2000,16 +2121,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             if (!raw && (![self.photoOutput.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG] ||
                          !self.photoOutput.isHighResolutionCaptureEnabled))
                 [NSException raise:NSInvalidArgumentException format:@"JPEG na resolução original indisponível nesta sessão."];
-            AVCapturePhotoSettings *settings = raw ? [self.controls rawSettingsForOutput:self.photoOutput error:&error] :
+            NSDictionary *settingsDiagnostic = nil;
+            AVCapturePhotoSettings *settings = raw ? [self.controls rawSettingsForOutput:self.photoOutput
+                includeProcessedJPEG:self.comparisonActive diagnostic:&settingsDiagnostic error:&error] :
                 [AVCapturePhotoSettings photoSettingsWithFormat:@{AVVideoCodecKey:AVVideoCodecTypeJPEG}];
             if (!settings) { [self finishCaptureWithError:error]; return; }
-            // Only the explicit compatibility test requests a processed companion.
-            if (raw && self.comparisonActive) {
-                if (![self.photoOutput.availablePhotoCodecTypes containsObject:AVVideoCodecTypeJPEG])
-                    [NSException raise:NSInvalidArgumentException format:@"JPEG de comparação indisponível."];
-                settings = [AVCapturePhotoSettings photoSettingsWithRawPixelFormatType:settings.rawPhotoPixelFormatType
-                    processedFormat:@{AVVideoCodecKey:AVVideoCodecTypeJPEG}];
-            }
             settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationSpeed;
             if (![self.photoOutput.supportedFlashModes containsObject:@(AVCaptureFlashModeOff)])
                 [NSException raise:NSInvalidArgumentException format:@"Flash desligado indisponível nesta configuração."];
@@ -2021,8 +2137,17 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             self.captureResult = [[M7CaptureResult alloc] initWithID:settings.uniqueID wantsRAW:raw];
             self.captureData = nil; self.captureError = nil; self.captureMetadata = nil;
             dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = NO; [self enableControls:NO]; });
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            BOOL autoStillImageStabilization = settings.isAutoStillImageStabilizationEnabled;
+#pragma clang diagnostic pop
             [self recordCaptureStage:@"submit" details:@{@"id":@(settings.uniqueID),
                 @"rawFormat":@(settings.rawPhotoPixelFormatType), @"processedFormat":settings.format ?: @{},
+                @"rawFourCC":settings.rawPhotoPixelFormatType ? M7RAWFourCC(settings.rawPhotoPixelFormatType) : @"",
+                @"rawFileType":settings.rawFileType ?: @"", @"processedFileType":settings.processedFileType ?: @"",
+                @"autoStillImageStabilization":@(autoStillImageStabilization),
+                @"qualityPrioritization":@(settings.photoQualityPrioritization),
+                @"settingsDiagnostic":settingsDiagnostic ?: @{},
                 @"settingsClass":NSStringFromClass(settings.class), @"highResolution":@(settings.isHighResolutionPhotoEnabled), @"session":[self sessionDiagnostic]}];
             if (self.comparisonActive) self.comparisonReport[@"captureID"] = @(settings.uniqueID);
             [self message:@"Capturando…"];
@@ -2285,7 +2410,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"userID":@(getuid()), @"effectiveUserID":@(geteuid()),
         @"photoOnlyRequested":@(self.photoOnlyRequested), @"photoOnlyObserved":@([self isPhotoOnlySession]),
         @"comparisonID":self.comparisonReport[@"id"] ?: @"", @"comparisonActive":@(self.comparisonActive), @"configured":@(self.configured), @"running":@(self.session.isRunning),
-        @"captureBusy":@(self.captureBusy), @"videoMode":@(self.videoModeActive),
+        @"captureBusy":@(self.captureBusy), @"rawCaptureWaiting":@(self.rawCaptureWaiting),
+        @"rawPreparationPending":@(self.rawPreparationPending), @"rawPrepared":@(self.rawPrepared),
+        @"rawPreparation":self.rawPreparationReport ?: @{}, @"videoMode":@(self.videoModeActive),
         @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
         @"trackingEnabled":@(self.trackingEnabled), @"trackingPending":@(self.trackingPending),
         @"webcamEnabled":@(self.webcamEnabled), @"webcamEncoding":@(self.webcamEncoding),
@@ -2327,7 +2454,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.1", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
@@ -2354,8 +2481,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
-    BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"rawJPEGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
+    BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.1", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -2403,11 +2530,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.1" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
-            if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
+            if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
-            [menu addAction:[UIAlertAction actionWithTitle:@"Último teste RAW + JPEG" style:UIAlertActionStyleDefault
+            [menu addAction:[UIAlertAction actionWithTitle:@"Último teste RAW DNG" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) {
                     NSDictionary *report;
                     @synchronized (M7CameraController.class) { report = M7LastTestReport; }
@@ -2507,15 +2634,15 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         if (self.comparisonActive || self.captureBusy || self.pendingPhoto || self.closing) {
             [self message:@"Já existe uma captura ou foto pendente. Conclua-a antes do teste."]; return;
         }
-        [self recordSessionEvent:@"rawJPEGTestRequested" details:[self sessionDiagnostic]];
-        self.comparisonReport = [@{@"mode":@"rawPlusJPEG", @"id":NSUUID.UUID.UUIDString, @"startedAt":@(NSDate.date.timeIntervalSince1970),
+        [self recordSessionEvent:@"explicitDNGTestRequested" details:[self sessionDiagnostic]];
+        self.comparisonReport = [@{@"mode":@"explicitDNGPlusJPEG", @"id":NSUUID.UUID.UUIDString, @"startedAt":@(NSDate.date.timeIntervalSince1970),
             @"controllerID":self.controllerID, @"sessionID":self.sessionID, @"processID":@(getpid()),
             @"status":@"configuring", @"before":[self sessionDiagnostic]} mutableCopy];
         self.comparisonActive = YES;
         if (![self configurePeakingOutput:NO]) { [self completeComparison:@"configurationFailed"]; return; }
         self.comparisonReport[@"verifiedSession"] = M7JSONSnapshot([self sessionDiagnostic]);
         self.comparisonReport[@"status"] = @"capturing";
-        // Request RAW + JPEG in the same exposure; only genuine RAW is saved.
+        // Request explicit DNG + JPEG in one exposure; only genuine RAW is saved.
         [self captureRAW:YES longEdge:0];
     });
 }
@@ -2529,7 +2656,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([self.captureTrace[@"comparisonID"] isEqual:self.comparisonReport[@"id"]])
         self.comparisonReport[@"capture"] = M7JSONSnapshot(self.captureTrace);
     [self.storage writeJSON:self.comparisonReport filename:@"ultimo-teste-raw.json" error:nil];
-    NSDictionary *report = [self diagnosticSnapshot:@"rawJPEGTest" status:outcome];
+    NSDictionary *report = [self diagnosticSnapshot:@"explicitDNGTest" status:outcome];
     @synchronized (M7CameraController.class) { M7LastTestReport = report; }
     [self presentDiagnostic:report];
 }

@@ -14,6 +14,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Capture result selection
         run: bash tests/run_capture_result_native.sh
+      - name: RAW DNG compatibility selection
+        run: bash tests/run_raw_configuration_native.sh
       - name: Error serialization
         run: bash tests/run_error_details_native.sh
       - name: Storage

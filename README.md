@@ -1,8 +1,8 @@
-# Manual7 — 0.7.0 experimental
+# Manual7 — 0.7.1 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. O teste da 0.1.5 confirmou que RAW ainda falha com AVFoundation −11800 / OSStatus −12780 mesmo com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. Remover a saída de peaking não resolveu. A 0.1.6 acrescentou uma captura alternativa RAW + JPEG; esse teste ainda não foi executado no aparelho. A 0.2.0 acrescentou gravação de vídeo e Reframe, a 0.3.0 acrescentou rastreamento automático, a 0.4.0 acrescentou controle remoto por Linux e a 0.5.0 integrou o OpenSSH do Procursus. O relatório físico da 0.5.0 mostrou que o sandbox da Câmera nega `bind(AF_INET)` com `EPERM`; a 0.5.1 moveu a API para um socket Unix encaminhado pelo SSH. A 0.6.0 acrescentou webcam MJPEG e a 0.7.0 acrescenta pareamento por QR. **Vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.1 corrige a configuração que ainda estava implícita: valida Bayer contra o contêiner DNG, solicita `AVFileTypeDNG`, desliga a estabilização, prepara os buffers RAW antecipadamente e aguarda a estabilização do sensor. Essa correção precisa ser validada no aparelho. A 0.2.0 acrescentou vídeo e Reframe, a 0.3.0 rastreamento, a 0.4.0 controle remoto, a 0.5.0 OpenSSH, a 0.6.0 webcam MJPEG e a 0.7.0 pareamento por QR. **RAW 0.7.1, vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física no iPhone.**
 
 ## OpenSSH e controle remoto
 
@@ -12,7 +12,7 @@ O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 22
 
 O cliente `tools/manual7_remote.py`, feito apenas com a biblioteca padrão do Python, consulta estado, copia diagnóstico, fotografa, inicia/para vídeo e webcam, repete salvamentos pendentes e altera modo, lente, exposição, ISO, shutter, EV, foco, RAW, tamanho JPEG, Reframe, tracking e peaking. Cada requisição aceita, recusada ou malformada é contabilizada; comandos e resultados aparecem em `remoteEvents`, e comandos feitos durante vídeo também entram em `lastVideo.events`. O PIN não é registrado.
 
-O fluxo completo, comandos e valores aceitos estão em [API-REMOTE.md](API-REMOTE.md). A 0.7.0 acrescenta [pareamento por QR](PAIRING-LINUX.md): o script exibe um código de uso único, o botão **Ler QR do PC** reconhece o notebook e o Linux abre os dois túneis sem digitar o IP do iPhone ou copiar o PIN para configurar a conexão.
+O fluxo completo, comandos e valores aceitos estão em [API-REMOTE.md](API-REMOTE.md). O [pareamento por QR](PAIRING-LINUX.md) exibe um código de uso único, o botão **Ler QR do PC** reconhece o notebook e o Linux abre os dois túneis sem digitar o IP do iPhone ou copiar o PIN para configurar a conexão.
 
 ## Pareamento QR na 0.7.0
 
@@ -52,13 +52,23 @@ Os arquivos finais são enviados ao Fotos um por vez. O master é removido somen
 
 `lastVideo` registra configuração, autorização de microfone/Fotos, espaço disponível, estado do writer, frames gravados, frames descartados, backpressure, áudio, arquivo master, geometria e status de cada exportação, resultado do Fotos, identificador do asset e limpeza. Para rastreamento, registra detector, frequência, número total de pontos, amostragem do relatório, tempos, centros, confiança, candidatos humanos/rostos, caixas do Vision, perdas consecutivas e erros. Até 600 pontos são incluídos no relatório copiado; `totalPoints` e `reportStride` indicam eventual redução. `trackingNow`, `videoWriterNow`, `videoFormat` e `pendingVideos` aparecem no diagnóstico geral. Mudanças de ISO, shutter, foco, EV, travas, lente, peaking e rastreamento são correlacionadas com a gravação.
 
+## Correção RAW/DNG na 0.7.1
+
+O relatório anterior mostrou `rgg4` (`kCVPixelFormatType_14Bayer_RGGB`) em `availableRawPhotoPixelFormatTypes`, mas a configuração usava somente esse inventário geral. A API da Apple também exige que o formato esteja na lista aceita pelo tipo de arquivo escolhido. A 0.7.1 exige `AVFileTypeDNG` em `availableRawPhotoFileTypes`, cruza os formatos com `supportedRawPhotoPixelFormatTypesForFileType:`, escolhe somente Bayer nessa interseção e cria a captura com DNG explícito. O teste combinado valida também o par codec/contêiner JPEG.
+
+Para Bayer RAW, a configuração usa prioridade `Speed`, estabilização automática desligada, flash desligado, zoom e recorte 1× e alta resolução desligada no pedido RAW. `maxPhotoQualityPrioritization` é definido antes de iniciar a sessão. O M7 também chama `setPreparedPhotoSettingsArray:` depois de cada troca de lente ou topologia, preparando RAW e RAW + JPEG antes do disparo. O disparador aguarda até três segundos pela preparação e pelo término dos ajustes de exposição/foco; se o foco contínuo continuar se movendo, envia o pedido e marca `timedOut` no relatório.
+
+O relatório agora inclui `rawCompatibility`, com tipos de arquivo, valores numéricos, FourCC, classificação Bayer, formatos DNG aceitos e formato selecionado; `rawPreparation`, com resultado da alocação antecipada; e, em `submit`, `rawFileType`, `processedFileType`, estabilização e prioridade efetivas. O código −12780 não possui um nome público documentado, portanto o M7 registra toda a cadeia `NSError` sem atribuir a ele um significado inventado.
+
+Em **Exportar → Testar RAW DNG explícito**, o M7 remove a saída de vídeo, configura AUTO/AF e solicita DNG e JPEG no mesmo disparo. O JPEG acompanhante serve apenas para diagnóstico; somente um DNG genuíno é encaminhado ao Fotos.
+
 ## Captura de compatibilidade na 0.1.6
 
-Em **Exportar → Testar RAW + JPEG (compatibilidade)**, o M7 remove a saída de vídeo, configura AUTO/AF e solicita RAW e JPEG no mesmo disparo. A diferença em relação ao teste anterior é o pedido combinado de formatos, previsto pela API pública da Apple. É uma hipótese de compatibilidade, não uma interpretação comprovada do erro −12780. O JPEG acompanhante serve apenas para diagnóstico; **só o DNG válido é encaminhado ao Fotos**, sem conversão de JPEG para DNG. O botão FOTOGRAFAR mantém as opções normais de RAW ou JPEG.
+O teste anterior removeu a saída de vídeo, configurou AUTO/AF e solicitou RAW e JPEG no mesmo disparo. O aparelho confirmou que essa combinação também falhava com −11800 / −12780 antes de produzir bytes. O JPEG nunca substitui o RAW nem é convertido para DNG.
 
 O relatório registra cada callback separadamente, com formato, ID, presença e dimensões do pixel buffer, erro e tamanho do arquivo. `representationSkipped` significa que o callback falhou antes de chamar `fileDataRepresentation`; `representation` com `attempted: true` significa que houve tentativa de gerar o arquivo. Um buffer ausente em um formato comprimido não basta, isoladamente, para diagnosticar falha do sensor. Os callbacks RAW/JPEG podem chegar em qualquer ordem: o JPEG nunca substitui o RAW nem apaga seu erro.
 
-O relatório automático é congelado ao terminar e abre com o título **Teste RAW + JPEG** e um identificador curto. **Último teste RAW + JPEG** reabre exatamente esse resultado mesmo depois de outra foto ou de fechar/reabrir o M7 dentro do mesmo processo Câmera. Encerrar o processo apaga essa cópia em memória. **Ver diagnóstico** gera um relatório separado, intitulado **Estado atual**. `reportOrigin`, `reportID` e `lastComparison.mode` identificam a origem e o tipo do teste.
+O relatório automático é congelado ao terminar e abre com o título **Teste RAW DNG** e um identificador curto. **Último teste RAW DNG** reabre exatamente esse resultado mesmo depois de outra foto ou de fechar/reabrir o M7 dentro do mesmo processo Câmera. Encerrar o processo apaga essa cópia em memória. **Ver diagnóstico** gera um relatório separado, intitulado **Estado atual**. `reportOrigin`, `reportID` e `lastComparison.mode` identificam a origem e o tipo do teste.
 
 O teste verifica que resta apenas `AVCapturePhotoOutput` antes da submissão. **Restaurar saída de peaking** é uma ação separada. O modo sem saída de vídeo persiste entre instâncias do M7 dentro do mesmo processo.
 
@@ -127,18 +137,18 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.7.0](https://github.com/Raidzap/Manual7/releases/tag/v0.7.0).
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.7.1](https://github.com/Raidzap/Manual7/releases/tag/v0.7.1).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
 2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes do bootstrap.
-3. Transfira `dev.manual7.camera_0.7.0_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
+3. Transfira `dev.manual7.camera_0.7.1_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
 cd /var/mobile/Downloads
-sudo apt install ./dev.manual7.camera_0.7.0_iphoneos-arm64.deb
+sudo apt install ./dev.manual7.camera_0.7.1_iphoneos-arm64.deb
 ```
 
 Use `apt` ou Sileo nesta versão: `dpkg -i` sozinho não baixa uma dependência ausente. O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. As dependências `mobilesubstrate` e `openssh-server` são fornecidas pelo ambiente rootless/Procursus; o script do OpenSSH carrega o serviço no `launchd`.
@@ -220,7 +230,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 `bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill central e móvel e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. `bash tests/run_subject_tracker_native.sh` executa o caminho sem pessoa em um pixel buffer real, conferindo rastros temporizados, estado, reset e JSON. Esses testes exigem macOS e não simulam câmera, microfone, PhotoKit, temperatura, uma pessoa real ou capacidade de codificação do iPhone.
 
-A suíte da 0.7.0 também compila e exercita os transportes TCP e Unix da API, o socket MJPEG, o parser/retorno de pareamento, o caminho de análise Vision, tokens de uso único, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comandos dos clientes Python. O runner macOS hospedado não reconheceu o QR sintético porque o serviço `AppleM2ScalerCSCDriver` não está disponível; o reconhecimento positivo continua como validação obrigatória no iPhone.
+A suíte da 0.7.1 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar os transportes TCP e Unix da API, o socket MJPEG, o parser/retorno de pareamento, o caminho de análise Vision, tokens de uso único, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comandos dos clientes Python. O runner macOS hospedado não reconheceu o QR sintético porque o serviço `AppleM2ScalerCSCDriver` não está disponível; o reconhecimento positivo continua como validação obrigatória no iPhone.
 
 A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37637858097).
 

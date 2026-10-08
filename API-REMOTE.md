@@ -1,6 +1,6 @@
 # Controle remoto do Manual7
 
-O Manual7 0.7.0 executa um servidor HTTP/JSON no socket Unix `/var/tmp/Manual7-api.sock` dentro do processo Câmera. O notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado; cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7. A mesma sessão SSH encaminha `/var/tmp/Manual7-webcam.sock` para `127.0.0.1:17838`. Para descobrir o iPhone e abrir esses túneis pelo QR, siga [PAIRING-LINUX.md](PAIRING-LINUX.md).
+O Manual7 0.7.1 executa um servidor HTTP/JSON no socket Unix `/var/tmp/Manual7-api.sock` dentro do processo Câmera. O notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado; cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7. A mesma sessão SSH encaminha `/var/tmp/Manual7-webcam.sock` para `127.0.0.1:17838`. Para descobrir o iPhone e abrir esses túneis pelo QR, siga [PAIRING-LINUX.md](PAIRING-LINUX.md).
 
 O primeiro teste físico da 0.5.0 retornou `EPERM` em `bind(AF_INET)` no sandbox do processo Câmera. A 0.5.1 não abre porta TCP no iPhone: cria um socket Unix com modo `0600`, acessível somente pelo usuário `mobile`, e o remove ao parar. O formato `ssh -L porta:socket_remoto` é suportado pelo OpenSSH para encaminhar uma porta TCP local a um socket Unix remoto.
 

@@ -11,6 +11,7 @@
 #import "M7OpenSSHStatus.h"
 #import "M7WebcamEncoder.h"
 #import "M7WebcamServer.h"
+#import "M7PairingManager.h"
 #import "../Core/M7Math.h"
 #import <Photos/Photos.h>
 #import <QuartzCore/QuartzCore.h>
@@ -57,6 +58,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) dispatch_queue_t videoQueue;
 @property (nonatomic) dispatch_queue_t trackingQueue;
 @property (nonatomic) dispatch_queue_t webcamQueue;
+@property (nonatomic) dispatch_queue_t pairingQueue;
 @property (nonatomic) AVCaptureSession *session;
 @property (nonatomic) AVCaptureDeviceInput *input;
 @property (nonatomic) AVCapturePhotoOutput *photoOutput;
@@ -81,6 +83,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) UISegmentedControl *captureMode;
 @property (nonatomic) UISegmentedControl *videoFormat;
 @property (nonatomic) UILabel *remoteLabel;
+@property (nonatomic) UIButton *pairButton;
 @property (nonatomic) UISwitch *webcamSwitch;
 @property (nonatomic) UISegmentedControl *webcamFormat;
 @property (nonatomic) UIView *rawRow;
@@ -110,6 +113,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) M7RemoteServer *remoteServer;
 @property (nonatomic) M7WebcamServer *webcamServer;
 @property (nonatomic) M7WebcamEncoder *webcamEncoder;
+@property (nonatomic) M7PairingManager *pairingManager;
 @property (nonatomic) NSString *remotePIN;
 @property (nonatomic) NSMutableArray<NSDictionary *> *remoteEvents;
 @property (nonatomic) NSDictionary *openSSHStatus;
@@ -133,6 +137,12 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (atomic) BOOL webcamVertical;
 @property (atomic) BOOL webcamRequested;
 @property (atomic) NSUInteger webcamBusyDrops;
+@property (atomic) BOOL pairingScanning;
+@property (atomic) BOOL pairingAnalyzing;
+@property (atomic) BOOL pairingSubmitting;
+@property (atomic) NSUInteger pairingGeneration;
+@property (nonatomic) CFTimeInterval pairingStartedAt;
+@property (nonatomic) CFTimeInterval lastPairingScanTime;
 @property (nonatomic) NSDictionary *lastWebcamError;
 @property (nonatomic) CFTimeInterval lastWebcamTime;
 @property (nonatomic) CFTimeInterval lastWebcamErrorLogTime;
@@ -216,6 +226,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.videoQueue = dispatch_queue_create("dev.manual7.media", DISPATCH_QUEUE_SERIAL);
     self.trackingQueue = dispatch_queue_create("dev.manual7.tracking", DISPATCH_QUEUE_SERIAL);
     self.webcamQueue = dispatch_queue_create("dev.manual7.webcam.encode", DISPATCH_QUEUE_SERIAL);
+    self.pairingQueue = dispatch_queue_create("dev.manual7.pairing.scan", DISPATCH_QUEUE_SERIAL);
     self.controllerID = NSUUID.UUID.UUIDString;
     self.sessionID = NSUUID.UUID.UUIDString;
     self.photoOnlyRequested = atomic_load(&M7PhotoOnlyPreferred);
@@ -228,6 +239,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.trackingCenter = CGPointMake(.5, .5);
     self.remotePIN = [NSString stringWithFormat:@"%06u", arc4random_uniform(900000)+100000];
     self.webcamEncoder = [M7WebcamEncoder new];
+    self.pairingManager = [M7PairingManager new];
     self.webcamServer = [[M7WebcamServer alloc] initWithUnixSocketPath:@"/var/tmp/Manual7-webcam.sock"
         pin:self.remotePIN];
     self.videoBackgroundTask = UIBackgroundTaskInvalid;
@@ -286,6 +298,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH… · API Unix · PIN %@", self.remotePIN];
     self.remoteLabel.accessibilityLabel = @"Controle remoto por SSH";
     [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
+    self.pairButton = [self button:@"Ler QR do PC" action:@selector(togglePairingScan)];
+    self.pairButton.accessibilityLabel = @"Parear Manual7 com notebook Linux por QR Code";
+    [stack addArrangedSubview:[self row:@"Conexão" control:self.pairButton]];
     self.webcamSwitch = [UISwitch new];
     [self.webcamSwitch addTarget:self action:@selector(changeWebcam) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self row:@"Webcam" control:self.webcamSwitch]];
@@ -625,6 +640,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         state[@"session"] = [self sessionDiagnostic];
         state[@"remoteServer"] = self.remoteServer.snapshot ?: @{};
         state[@"webcam"] = [self webcamSnapshot];
+        state[@"pairing"] = [self.pairingManager snapshot];
         state[@"openSSH"] = self.openSSHStatus ?: @{};
         completion(M7JSONSnapshot(state));
     });
@@ -651,7 +667,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.6.0", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.0", @"state":state });
             }];
         });
         return;
@@ -906,7 +922,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.6.0";
+    self.captureTrace[@"version"] = @"0.7.0";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1018,7 +1034,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSMutableDictionary *diagnostic = [limits mutableCopy];
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
-    diagnostic[@"version"] = @"0.6.0";
+    diagnostic[@"version"] = @"0.7.0";
     self.lensDiagnostic = diagnostic;
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
     float focus = device.lensPosition;
@@ -1064,6 +1080,138 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     });
     [self message:enabled ? @"Rastreamento de pessoa ativo; o círculo fica verde ao detectar."
         : @"Rastreamento desligado; o Reframe voltou ao centro."];
+}
+
+- (void)finishPairingUI:(NSString *)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.pairButton setTitle:@"Ler QR do PC" forState:UIControlStateNormal];
+        [self enableControls:self.configured && self.session.isRunning];
+        if (message.length) [self message:message];
+    });
+}
+
+- (void)cancelPairing:(NSString *)reason {
+    BOOL wasActive = self.pairingScanning || self.pairingSubmitting;
+    ++self.pairingGeneration;
+    self.pairingScanning = NO;
+    self.pairingAnalyzing = NO;
+    self.pairingSubmitting = NO;
+    dispatch_async(self.pairingQueue, ^{ [self.pairingManager cancel]; });
+    if (wasActive) dispatch_async(self.sessionQueue, ^{
+        [self recordSessionEvent:@"pairingCancelled" details:@{ @"reason":reason ?: @"" }];
+    });
+    [self finishPairingUI:[reason isEqual:@"user"] ? @"Leitura do QR cancelada." : nil];
+}
+
+- (void)togglePairingScan {
+    if (self.pairingScanning || self.pairingSubmitting) { [self cancelPairing:@"user"]; return; }
+    self.pairButton.enabled = NO;
+    ++self.pairingGeneration;
+    dispatch_async(self.sessionQueue, ^{
+        if (!self.configured || !self.session.isRunning || self.closing || self.captureBusy) {
+            [self recordSessionEvent:@"pairingScanRejected" details:[self sessionDiagnostic]];
+            [self finishPairingUI:@"A câmera precisa estar pronta para ler o QR."];
+            return;
+        }
+        if (![self.openSSHStatus[@"serviceReachable"] boolValue]) {
+            [self recordSessionEvent:@"pairingScanRejected" details:@{ @"reason":@"openSSHUnavailable",
+                @"openSSH":self.openSSHStatus ?: @{} }];
+            [self finishPairingUI:@"Aguarde a linha Remoto mostrar uma porta SSH ativa."];
+            return;
+        }
+        BOOL outputReady = [self.session.outputs containsObject:self.videoOutput];
+        if (!outputReady && !self.videoModeActive) outputReady = [self configurePeakingOutput:YES];
+        if (!outputReady) {
+            [self recordSessionEvent:@"pairingScanRejected" details:@{ @"reason":@"videoOutputUnavailable",
+                @"session":[self sessionDiagnostic] }];
+            [self finishPairingUI:@"Não foi possível ativar o leitor QR. Veja o diagnóstico."];
+            return;
+        }
+        dispatch_sync(self.videoQueue, ^{
+            self.pairingStartedAt = CACurrentMediaTime();
+            self.lastPairingScanTime = 0;
+        });
+        self.pairingScanning = YES;
+        self.pairingAnalyzing = NO;
+        BOOL usageDeclared = [NSBundle.mainBundle objectForInfoDictionaryKey:
+            @"NSLocalNetworkUsageDescription"] != nil;
+        [self recordSessionEvent:@"pairingScanStarted" details:@{ @"timeoutSeconds":@30,
+            @"analysisHz":@3, @"localNetworkUsageDeclared":@(usageDeclared) }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.pairButton setTitle:@"Cancelar QR" forState:UIControlStateNormal];
+            self.pairButton.enabled = YES;
+            [self message:@"Aponte a câmera para o QR exibido pelo script Linux."];
+        });
+    });
+}
+
+- (void)schedulePairingForSampleBuffer:(CMSampleBufferRef)sample {
+    if (!self.pairingScanning || self.pairingAnalyzing) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - self.pairingStartedAt >= 30) {
+        self.pairingScanning = NO;
+        dispatch_async(self.sessionQueue, ^{
+            [self recordSessionEvent:@"pairingScanTimedOut" details:@{ @"timeoutSeconds":@30 }];
+        });
+        [self finishPairingUI:@"QR não encontrado em 30 segundos. Tente novamente."];
+        return;
+    }
+    if (now - self.lastPairingScanTime < (1.0/3.0)) return;
+    self.lastPairingScanTime = now;
+    CVPixelBufferRef pixel = CMSampleBufferGetImageBuffer(sample);
+    if (!pixel) return;
+    self.pairingAnalyzing = YES;
+    NSUInteger generation = self.pairingGeneration;
+    CVPixelBufferRetain(pixel);
+    dispatch_async(self.pairingQueue, ^{
+        NSError *scanError = nil;
+        NSDictionary *pairing = [self.pairingManager pairingPayloadFromPixelBuffer:pixel error:&scanError];
+        CVPixelBufferRelease(pixel);
+        self.pairingAnalyzing = NO;
+        if (!self.pairingScanning || generation != self.pairingGeneration) return;
+        if (scanError) {
+            self.pairingScanning = NO;
+            dispatch_async(self.sessionQueue, ^{
+                [self recordSessionEvent:@"pairingCodeRejected" details:@{ @"error":M7ErrorDetails(scanError) }];
+            });
+            [self finishPairingUI:scanError.localizedDescription];
+            return;
+        }
+        if (!pairing) return;
+        self.pairingScanning = NO;
+        self.pairingSubmitting = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.pairButton setTitle:@"Conectando…" forState:UIControlStateNormal];
+            self.pairButton.enabled = NO;
+            [self message:[NSString stringWithFormat:@"QR de %@ reconhecido. Conectando…",
+                pairing[@"name"] ?: @"notebook"]];
+        });
+        dispatch_async(self.sessionQueue, ^{
+            NSNumber *preferred = self.openSSHStatus[@"preferredPort"] ?: @0;
+            NSArray *ports = self.openSSHStatus[@"openPorts"] ?: @[];
+            [self recordSessionEvent:@"pairingCodeRecognized" details:@{
+                @"computerName":pairing[@"name"] ?: @"", @"callbackHost":pairing[@"host"] ?: @"",
+                @"callbackPort":pairing[@"port"] ?: @0, @"preferredSSHPort":preferred,
+                @"availableSSHPorts":ports }];
+            dispatch_async(self.pairingQueue, ^{
+                [self.pairingManager submitPairing:pairing pin:self.remotePIN preferredSSHPort:preferred
+                    availableSSHPorts:ports completion:^(NSDictionary *response, NSError *error) {
+                    if (generation != self.pairingGeneration) return;
+                    self.pairingSubmitting = NO;
+                    dispatch_async(self.sessionQueue, ^{
+                        [self recordSessionEvent:error ? @"pairingSubmitFailed" : @"pairingAccepted"
+                            details:@{ @"computerName":pairing[@"name"] ?: @"",
+                                @"callbackHost":pairing[@"host"] ?: @"",
+                                @"callbackPort":pairing[@"port"] ?: @0,
+                                @"response":response ?: @{}, @"error":M7ErrorDetails(error) }];
+                    });
+                    [self finishPairingUI:error ? [NSString stringWithFormat:
+                        @"Pareamento falhou: %@ · veja o diagnóstico.", error.localizedDescription]
+                        : @"Notebook reconhecido. Autorize o SSH no Linux, se solicitado."];
+                }];
+            });
+        });
+    });
 }
 
 - (NSDictionary *)webcamSnapshot {
@@ -1308,6 +1456,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.trackingSwitch.enabled = ready && self.videoModeActive && !changingTopology;
     self.webcamSwitch.enabled = ready && !changingTopology;
     self.webcamFormat.enabled = ready && !self.webcamRequested && !self.webcamEnabled;
+    self.pairButton.enabled = ready && !changingTopology && !self.pairingSubmitting;
     self.lens.enabled = ready && !changingTopology;
     self.exposureMode.enabled = ready; self.focusMode.enabled = ready;
     BOOL manual = ready && self.exposureMode.selectedSegmentIndex == 1 && [self.limits[@"manualExposure"] boolValue];
@@ -1526,7 +1675,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.6.0";
+    self.videoTrace[@"version"] = @"0.7.0";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -2141,6 +2290,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"trackingEnabled":@(self.trackingEnabled), @"trackingPending":@(self.trackingPending),
         @"webcamEnabled":@(self.webcamEnabled), @"webcamEncoding":@(self.webcamEncoding),
         @"webcamRequested":@(self.webcamRequested),
+        @"pairingScanning":@(self.pairingScanning), @"pairingAnalyzing":@(self.pairingAnalyzing),
+        @"pairingSubmitting":@(self.pairingSubmitting),
         @"audioAttached":@([self.session.outputs containsObject:self.audioOutput]),
         @"pendingExposure":@(self.pendingExposure),
         @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID),
@@ -2176,10 +2327,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.6.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.0", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
+        @"pairing":[self.pairingManager snapshot],
         @"remoteServer":self.remoteServer.snapshot ?: @{}, @"remoteEvents":self.remoteEvents ?: @[],
         @"openSSH":self.openSSHStatus ?: @{},
         @"pendingVideos":pendingVideoDetails,
@@ -2203,7 +2355,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"rawJPEGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.6.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.0", automatic ? @"Teste RAW + JPEG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -2251,7 +2403,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.6.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.0" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW + JPEG (compatibilidade)" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
@@ -2456,6 +2608,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         if (output != self.videoOutput) return;
         [self scheduleTrackingForSampleBuffer:sample];
         [self scheduleWebcamForSampleBuffer:sample];
+        [self schedulePairingForSampleBuffer:sample];
         CFTimeInterval now = CACurrentMediaTime();
         if (!self.peakingEnabled || self.overlayPending || now - self.lastPeakingTime < .1) return;
         self.lastPeakingTime = now;
@@ -2506,6 +2659,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (self.closing) return;
     if ([note.name isEqualToString:UIApplicationWillResignActiveNotification]) {
         self.peakingView.image = nil;
+        [self cancelPairing:@"applicationBackground"];
         if (self.webcamSwitch.on) { self.webcamSwitch.on = NO; [self changeWebcam]; }
         [self stopRemoteServerReason:@"applicationBackground"];
         self.remoteLabel.textColor = UIColor.systemYellowColor;
@@ -2526,6 +2680,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             }
         });
     } else if ([note.name isEqualToString:AVCaptureSessionRuntimeErrorNotification]) {
+        [self cancelPairing:@"sessionError"];
         NSError *error = note.userInfo[AVCaptureSessionErrorKey];
         [self message:[NSString stringWithFormat:@"Câmera: %@. Feche e reabra M7.", error.localizedDescription ?: @"erro de sessão"]];
         dispatch_async(self.sessionQueue, ^{
@@ -2538,6 +2693,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             dispatch_async(dispatch_get_main_queue(), ^{ self.closeButton.enabled = YES; });
         });
     } else if ([note.name isEqualToString:AVCaptureSessionWasInterruptedNotification]) {
+        [self cancelPairing:@"sessionInterrupted"];
         [self message:@"Câmera interrompida; aguardando disponibilidade."];
         dispatch_async(self.sessionQueue, ^{
             [self recordSessionEvent:@"sessionInterrupted" details:note.userInfo ?: @{}];
@@ -2619,6 +2775,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             return;
         }
         self.closing = YES;
+        [self cancelPairing:@"controllerClosed"];
         self.webcamRequested = NO;
         self.webcamEnabled = NO;
         dispatch_async(self.webcamQueue, ^{ [self.webcamServer stop]; });
@@ -2638,6 +2795,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)dealloc {
+    [_pairingManager cancel];
     [_remoteServer stop];
     [_webcamServer stop];
     [_timer invalidate];

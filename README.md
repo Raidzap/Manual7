@@ -1,8 +1,8 @@
-# Manual7 — 0.6.0 experimental
+# Manual7 — 0.7.0 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. O teste da 0.1.5 confirmou que RAW ainda falha com AVFoundation −11800 / OSStatus −12780 mesmo com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. Remover a saída de peaking não resolveu. A 0.1.6 acrescentou uma captura alternativa RAW + JPEG; esse teste ainda não foi executado no aparelho. A 0.2.0 acrescentou gravação de vídeo e Reframe, a 0.3.0 acrescentou rastreamento automático, a 0.4.0 acrescentou controle remoto por Linux e a 0.5.0 integrou o OpenSSH do Procursus. O relatório físico da 0.5.0 mostrou que o sandbox da Câmera nega `bind(AF_INET)` com `EPERM`; a 0.5.1 moveu a API para um socket Unix encaminhado pelo SSH. A 0.6.0 acrescenta webcam MJPEG protegida pelo mesmo túnel, com saída para `v4l2loopback` no Linux. **Vídeo, Reframe, rastreamento, controle remoto e webcam ainda precisam de validação física no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. O teste da 0.1.5 confirmou que RAW ainda falha com AVFoundation −11800 / OSStatus −12780 mesmo com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. Remover a saída de peaking não resolveu. A 0.1.6 acrescentou uma captura alternativa RAW + JPEG; esse teste ainda não foi executado no aparelho. A 0.2.0 acrescentou gravação de vídeo e Reframe, a 0.3.0 acrescentou rastreamento automático, a 0.4.0 acrescentou controle remoto por Linux e a 0.5.0 integrou o OpenSSH do Procursus. O relatório físico da 0.5.0 mostrou que o sandbox da Câmera nega `bind(AF_INET)` com `EPERM`; a 0.5.1 moveu a API para um socket Unix encaminhado pelo SSH. A 0.6.0 acrescentou webcam MJPEG e a 0.7.0 acrescenta pareamento por QR. **Vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física no iPhone.**
 
 ## OpenSSH e controle remoto
 
@@ -12,7 +12,13 @@ O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 22
 
 O cliente `tools/manual7_remote.py`, feito apenas com a biblioteca padrão do Python, consulta estado, copia diagnóstico, fotografa, inicia/para vídeo e webcam, repete salvamentos pendentes e altera modo, lente, exposição, ISO, shutter, EV, foco, RAW, tamanho JPEG, Reframe, tracking e peaking. Cada requisição aceita, recusada ou malformada é contabilizada; comandos e resultados aparecem em `remoteEvents`, e comandos feitos durante vídeo também entram em `lastVideo.events`. O PIN não é registrado.
 
-O fluxo completo, comandos e valores aceitos estão em [API-REMOTE.md](API-REMOTE.md).
+O fluxo completo, comandos e valores aceitos estão em [API-REMOTE.md](API-REMOTE.md). A 0.7.0 acrescenta [pareamento por QR](PAIRING-LINUX.md): o script exibe um código de uso único, o botão **Ler QR do PC** reconhece o notebook e o Linux abre os dois túneis sem digitar o IP do iPhone ou copiar o PIN para configurar a conexão.
+
+## Pareamento QR na 0.7.0
+
+Execute `python3 tools/manual7_pair.py` no notebook e toque em **Conexão → Ler QR do PC** no M7. O leitor reutiliza a saída de vídeo já ativa e limita a análise Vision a 3 Hz. Após reconhecer o QR, o iPhone faz um callback temporário com o PIN da sessão e as portas SSH comprovadamente abertas; o script usa o endereço de origem do callback como IP do iPhone e inicia a API em `127.0.0.1:17837` e a webcam em `127.0.0.1:17838`.
+
+O token do QR vence, só funciona uma vez e não é gravado. O PIN também continua ausente dos diagnósticos. Estados, tempos, host/porta, erros e contadores ficam em `pairing` e `sessionEvents`. A rede persistente continua sob OpenSSH; o callback HTTP existe apenas durante o pareamento na rede local. Instalação, opções e solução de problemas estão em [PAIRING-LINUX.md](PAIRING-LINUX.md).
 
 ## Webcam SSH na 0.6.0
 
@@ -88,6 +94,7 @@ Os dois seletores foram corrigidos. Um protocolo adicional os torna obrigatório
 | Reframe | Exportação 1920 × 1080, 1080 × 1920 ou as duas a partir do mesmo master, preservando áudio. Centralizado com rastreamento desligado. |
 | Rastreamento | Pessoa com tronco superior e rosto como fallback via Vision, análise máxima de 5 Hz, suavização e retorno gradual ao centro quando o alvo é perdido. |
 | Controle remoto | API HTTP/JSON em socket Unix com PIN por sessão e cliente Python para Linux através de túnel SSH. |
+| Pareamento QR | QR de uso único reconhecido com Vision; callback local entrega porta SSH/PIN ao script, que abre os túneis sem digitar o IP do iPhone. |
 | Webcam Linux | MJPEG autenticado no túnel SSH, 1280 × 720 ou 720 × 1280 a até 10 fps, entregue a `v4l2loopback` por FFmpeg. |
 | Foco manual | Posição normalizada de 0 a 1, sem inferir distância em metros; atualiza durante o arraste com limitação de frequência. |
 | Focus peaking | Bordas em verde, limiar ajustável, análise de luminância reduzida a até 480 pixels na maior dimensão e no máximo 10 atualizações/s. |
@@ -120,18 +127,18 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.6.0](https://github.com/Raidzap/Manual7/releases/tag/v0.6.0).
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.7.0](https://github.com/Raidzap/Manual7/releases/tag/v0.7.0).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
 2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes do bootstrap.
-3. Transfira `dev.manual7.camera_0.6.0_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
+3. Transfira `dev.manual7.camera_0.7.0_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
 cd /var/mobile/Downloads
-sudo apt install ./dev.manual7.camera_0.6.0_iphoneos-arm64.deb
+sudo apt install ./dev.manual7.camera_0.7.0_iphoneos-arm64.deb
 ```
 
 Use `apt` ou Sileo nesta versão: `dpkg -i` sozinho não baixa uma dependência ausente. O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. As dependências `mobilesubstrate` e `openssh-server` são fornecidas pelo ambiente rootless/Procursus; o script do OpenSSH carrega o serviço no `launchd`.
@@ -145,7 +152,7 @@ O visor permanece fixo acima dos controles. Deslize a área dos controles para a
 - Use **AUTO** para compensação EV. **AE-L** mantém a exposição; **AF-L** mantém o foco atual. As travas são imediatas: aguarde o foco/exposição estabilizarem antes de travar.
 - Para JPEG, desligue **DNG RAW** e escolha **Tamanho**. Para RAW, ative **DNG RAW**. Toque em **FOTOGRAFAR**. O disparador aguarda os callbacks de aplicação dos ajustes manuais pendentes.
 - Para vídeo, selecione **Vídeo**, escolha **16:9**, **9:16** ou **Ambos** em Reframe. Ative **Rastrear** para seguir automaticamente uma pessoa ou deixe desligado para recorte central. Toque em **GRAVAR VÍDEO**, toque novamente para parar e mantenha o M7 aberto até o Fotos confirmar as saídas.
-- Para controle pelo notebook, configure a autenticação SSH da conta `mobile`, abra M7 e siga [API-REMOTE.md](API-REMOTE.md). O pacote já solicita a instalação do servidor; o painel precisa permanecer aberto e em primeiro plano para a API M7.
+- Para conectar o notebook, instale `qrencode`, execute `python3 tools/manual7_pair.py`, toque em **Ler QR do PC** e siga [PAIRING-LINUX.md](PAIRING-LINUX.md). Para conexão manual e todos os comandos, consulte [API-REMOTE.md](API-REMOTE.md).
 - Para usar o iPhone como webcam no Linux, carregue `v4l2loopback`, abra o túnel e execute `webcam-feed` conforme [WEBCAM-LINUX.md](WEBCAM-LINUX.md). ISO, shutter, foco, EV, lente e rastreamento permanecem ajustáveis no painel ou pelo notebook.
 - **Exportar** lista até 12 cópias locais recentes, **Ver diagnóstico** e a ação de salvar uma foto pendente, quando houver. Ao selecionar uma foto, escolha **Adicionar ao Fotos** ou **Compartilhar**. A folha de compartilhamento permite salvar no app Arquivos e oferece as ações disponíveis no sistema para o formato selecionado. Fotos anteriores continuam preservadas; a interface lista somente as 12 recentes.
 
@@ -171,7 +178,8 @@ Quando o armazenamento funciona, `ultima-captura.json` preserva as etapas após 
 12. Repita 16:9, 9:16 e Ambos em cada lente. Interrompa uma gravação indo ao segundo plano e confirme finalização ou erro explícito. Se o Fotos falhar, use **Tentar salvar vídeos pendentes** sem gravar novamente.
 13. Ative Rastrear, mantenha uma pessoa no quadro e mova-a lentamente da esquerda para a direita e de cima para baixo. Confirme círculo verde durante a detecção, guias móveis e movimento suave nos dois vídeos. Saia do quadro por mais de um segundo e confirme retorno gradual ao centro. Repita com duas pessoas e com apenas o rosto visível. Copie o diagnóstico e confira `tracking.totalPoints`, `detections`, `misses`, `points` e `dynamicReframe`.
 14. Confirme que a linha Remoto mostra `SSH 22 · API Unix` ou `SSH 2222 · API Unix`. No Linux, abra o túnel SSH, configure `MANUAL7_PIN` e execute `ping` e `state`. Verifique `state.openSSH` e `state.remoteServer.transport: unix`, altere cada controle remoto, fotografe JPEG, inicie/pare um vídeo e obtenha `diagnostic`. Confirme no iPhone que a interface acompanha as alterações e confira `openSSH`, `remoteServer`, `remoteEvents` e eventos remotos em `lastVideo`. Teste PIN incorreto, segundo plano e fechamento do painel; a API deve recusar conexões nesses estados.
-15. No Linux, crie `/dev/video10` com `v4l2loopback`, execute `webcam-feed` em 16:9 e selecione **Manual7 Webcam** em um consumidor V4L2. Altere ISO, shutter, foco, EV e lente durante o uso; confirme o efeito sem reiniciar. Repita em 9:16, com rastreamento ligado, PIN incorreto e segundo plano. No diagnóstico, verifique `webcam.server.clientCount`, `framesPublished`, `bytesPublished`, `busyDrops`, dimensões, permissões `0600` e ausência de erros.
+15. Execute `manual7_pair.py`, leia o QR pelo botão **Ler QR do PC** e confirme que o script identifica o IP/porta do iPhone e abre os dois túneis. Repita com token inválido, timeout, cancelamento, firewall bloqueando o callback e segundo plano. Verifique `pairing`, ausência de PIN/token no relatório e os eventos `pairingScanStarted`, `pairingCodeRecognized` e `pairingAccepted` ou erro explícito.
+16. No Linux, crie `/dev/video10` com `v4l2loopback`, execute `webcam-feed` em 16:9 e selecione **Manual7 Webcam** em um consumidor V4L2. Altere ISO, shutter, foco, EV e lente durante o uso; confirme o efeito sem reiniciar. Repita em 9:16, com rastreamento ligado, PIN incorreto e segundo plano. No diagnóstico, verifique `webcam.server.clientCount`, `framesPublished`, `bytesPublished`, `busyDrops`, dimensões, permissões `0600` e ausência de erros.
 
 Se ocorrer erro de sessão, a interface permite fechar e reabrir o modo. Se a Câmera não abrir após instalar, desative a injeção para ela pelo recurso disponível no jailbreak ou remova o pacote em um terminal:
 
@@ -183,7 +191,7 @@ Depois feche e reabra a Câmera. A remoção do pacote não apaga as capturas ex
 
 ## Arquitetura e limites desta versão
 
-`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em filas seriais de sessão, mídia, rastreamento e webcam. `M7RemoteServer` atende HTTP/JSON no socket Unix e encaminha comandos autenticados para as mesmas ações da interface. `M7WebcamEncoder` recorta o pixel buffer com Core Image e codifica JPEG; `M7WebcamServer` envia multipart MJPEG autenticado por outro socket Unix. `M7OpenSSHStatus` verifica o pacote e os sockets do serviço sem executar comandos privilegiados. `M7DeviceControls` aplica os controles e seleciona o formato de vídeo. `M7VideoRecorder` grava os sample buffers em um master H.264/AAC. `M7SubjectTracker` analisa pessoas/rostos com Vision. `M7VideoReframe` interpola os recortes 16:9/9:16. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para JPEG. `M7Storage` mantém as cópias opcionais e relatórios.
+`Tweak.m` instala o botão e intercepta somente `AVCaptureSession startRunning/stopRunning` para suspender sessões nativas enquanto M7 controla a câmera, conservando a intenção de retomada. `M7CameraController` possui uma sessão AVFoundation separada, operada em filas seriais de sessão, mídia, rastreamento, webcam e pareamento. `M7PairingManager` valida o URI, reconhece QR com Vision e envia o callback temporário sem incluir segredos no snapshot. `M7RemoteServer` atende HTTP/JSON no socket Unix e encaminha comandos autenticados para as mesmas ações da interface. `M7WebcamEncoder` recorta o pixel buffer com Core Image e codifica JPEG; `M7WebcamServer` envia multipart MJPEG autenticado por outro socket Unix. `M7OpenSSHStatus` verifica o pacote e os sockets do serviço sem executar comandos privilegiados. `M7DeviceControls` aplica os controles e seleciona o formato de vídeo. `M7VideoRecorder` grava os sample buffers em um master H.264/AAC. `M7SubjectTracker` analisa pessoas/rostos com Vision. `M7VideoReframe` interpola os recortes 16:9/9:16. `M7Math` implementa a grade de shutter, mapeamento ISO e detecção Sobel. `M7JPEG` usa ImageIO para JPEG. `M7Storage` mantém as cópias opcionais e relatórios.
 
 O modo M7 tem interface em retrato, usa as lentes traseiras e mantém flash/torch desligados. Vídeo é 30 fps; não inclui 4K garantido, 60/120/240 fps, estabilização eletrônica, HDR, Live Photos, modo Retrato, câmera frontal, ProRAW, escolha manual de identidade, rastreamento de objetos genéricos ou controle do disparador nativo. A webcam não transmite áudio e entrega um formato por vez. O rastreamento detecta novamente a pessoa/rosto a cada análise; pessoas que se cruzam podem trocar de prioridade. O controle remoto e a webcam requerem M7 aberto, iPhone desbloqueado e túnel até os sockets Unix; eles não iniciam a Câmera nem desbloqueiam o iPhone. A autenticação e a exposição do SSH à rede continuam sob a configuração do OpenSSH/Procursus. Resolução/fps efetivos do master dependem dos formatos expostos pela lente no iOS 15.8.3 e aparecem no relatório. A carga térmica, a latência MJPEG e o desempenho do Vision/Core Image no A10 ainda precisam de medição física.
 
@@ -212,7 +220,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 `bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill central e móvel e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. `bash tests/run_subject_tracker_native.sh` executa o caminho sem pessoa em um pixel buffer real, conferindo rastros temporizados, estado, reset e JSON. Esses testes exigem macOS e não simulam câmera, microfone, PhotoKit, temperatura, uma pessoa real ou capacidade de codificação do iPhone.
 
-A suíte da 0.6.0 também compila e exercita os transportes TCP e Unix da API, o socket MJPEG, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comando FFmpeg do cliente Python. A validação no iPhone continua necessária.
+A suíte da 0.7.0 também compila e exercita os transportes TCP e Unix da API, o socket MJPEG, o parser/retorno de pareamento, QR real reconhecido pelo Vision, tokens de uso único, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comandos dos clientes Python. A validação no iPhone continua necessária.
 
 A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37637858097).
 
@@ -255,4 +263,4 @@ Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferra
 
 `tests/run_capture_result_native.sh` exercita o seletor de resultados usado em produção com Foundation: ambas as ordens de callbacks, isolamento de RAW, sucesso JPEG, erro de processamento/término, bytes vazios, ausência de RAW e callbacks atrasados/duplicados/de outra captura. Os dados desse teste são fixtures; não simulam um sensor nem validam um DNG.
 
-O workflow `.github/workflows/native-tests.yml` executa os programas nativos de captura, erros, armazenamento, JPEG/ImageIO, gravação, Reframe, rastreamento, servidor remoto, encoder e servidor MJPEG em macOS, além dos testes C e do cliente Python. Os contratos de compilação iOS são executados separadamente no ambiente Theos Linux. Resultados da versão são registrados em `BUILD.txt`. Esses testes não substituem a validação da câmera, microfone, Fotos, túnel SSH, V4L2, detecção real, desempenho e temperatura no iPhone.
+O workflow `.github/workflows/native-tests.yml` executa os programas nativos de captura, erros, armazenamento, JPEG/ImageIO, gravação, Reframe, rastreamento, reconhecimento QR, servidor remoto, encoder e servidor MJPEG em macOS, além dos testes C e dos clientes Python. Os contratos de compilação iOS são executados separadamente no ambiente Theos Linux. Resultados da versão são registrados em `BUILD.txt`. Esses testes não substituem a validação da câmera, microfone, Fotos, callback local, túnel SSH, V4L2, detecção real, desempenho e temperatura no iPhone.

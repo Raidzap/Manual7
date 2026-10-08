@@ -34,7 +34,7 @@ jobs:
         run: bash tests/run_webcam_server_native.sh
       - name: OpenSSH package and service status
         run: bash tests/run_openssh_status_native.sh
-      - name: QR pairing validation and Vision recognition
+      - name: QR pairing validation and Vision scan path
         run: bash tests/run_pairing_manager_native.sh
       - name: Core math
         run: python3 -m unittest discover -s tests -v

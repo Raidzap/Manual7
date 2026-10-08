@@ -38,6 +38,8 @@ static CVPixelBufferRef QRPixelBuffer(NSString *message) {
     assert(bitmap);
     CGContextSetRGBFillColor(bitmap, 1, 1, 1, 1);
     CGContextFillRect(bitmap, CGRectMake(0, 0, extent.size.width, extent.size.height));
+    CGContextTranslateCTM(bitmap, 0, extent.size.height);
+    CGContextScaleCTM(bitmap, 1, -1);
     CGContextDrawImage(bitmap, CGRectMake(0, 0, extent.size.width, extent.size.height), cgImage);
     CGContextRelease(bitmap);
     CGColorSpaceRelease(colorSpace);

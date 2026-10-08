@@ -3,6 +3,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import "../iOS/M7PairingManager.h"
 #include <assert.h>
+#include <stdio.h>
 
 static CVPixelBufferRef QRPixelBuffer(NSString *message) {
     CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
@@ -25,9 +26,23 @@ static CVPixelBufferRef QRPixelBuffer(NSString *message) {
     CVPixelBufferRef pixel = NULL;
     assert(CVPixelBufferCreate(kCFAllocatorDefault, extent.size.width, extent.size.height,
         kCVPixelFormatType_32BGRA, (__bridge CFDictionaryRef)attributes, &pixel) == kCVReturnSuccess);
+    CIContext *ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@YES}];
+    CGImageRef cgImage = [ciContext createCGImage:image fromRect:extent];
+    assert(cgImage);
+    assert(CVPixelBufferLockBaseAddress(pixel, 0) == kCVReturnSuccess);
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    [[CIContext contextWithOptions:nil] render:image toCVPixelBuffer:pixel bounds:extent colorSpace:colorSpace];
+    CGContextRef bitmap = CGBitmapContextCreate(CVPixelBufferGetBaseAddress(pixel),
+        CVPixelBufferGetWidth(pixel), CVPixelBufferGetHeight(pixel), 8,
+        CVPixelBufferGetBytesPerRow(pixel), colorSpace,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    assert(bitmap);
+    CGContextSetRGBFillColor(bitmap, 1, 1, 1, 1);
+    CGContextFillRect(bitmap, CGRectMake(0, 0, extent.size.width, extent.size.height));
+    CGContextDrawImage(bitmap, CGRectMake(0, 0, extent.size.width, extent.size.height), cgImage);
+    CGContextRelease(bitmap);
     CGColorSpaceRelease(colorSpace);
+    CGImageRelease(cgImage);
+    CVPixelBufferUnlockBaseAddress(pixel, 0);
     return pixel;
 }
 
@@ -52,6 +67,8 @@ int main(void) {
         error = nil;
         NSDictionary *detected = [manager pairingPayloadFromPixelBuffer:pixel error:&error];
         CVPixelBufferRelease(pixel);
+        if (!detected || error) fprintf(stderr, "Vision result: %s\n",
+            (error.localizedDescription ?: @"no QR observation").UTF8String);
         assert(detected && !error);
         NSDictionary *snapshot = manager.snapshot;
         assert([snapshot[@"state"] isEqual:@"recognized"]);

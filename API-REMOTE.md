@@ -1,8 +1,8 @@
 # Controle remoto do Manual7
 
-O Manual7 0.7.1 executa um servidor HTTP/JSON no socket Unix `/var/tmp/Manual7-api.sock` dentro do processo Câmera. O notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado; cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7. A mesma sessão SSH encaminha `/var/tmp/Manual7-webcam.sock` para `127.0.0.1:17838`. Para descobrir o iPhone e abrir esses túneis pelo QR, siga [PAIRING-LINUX.md](PAIRING-LINUX.md).
+O Manual7 0.7.2 executa um servidor HTTP/JSON em um socket Unix dentro do processo Câmera. O notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado; cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7. A mesma sessão SSH encaminha o socket MJPEG para `127.0.0.1:17838`. Como o caminho gravável depende do sandbox da Câmera, use o [pareamento por QR](PAIRING-LINUX.md), que recebe e aplica os dois caminhos reais.
 
-O primeiro teste físico da 0.5.0 retornou `EPERM` em `bind(AF_INET)` no sandbox do processo Câmera. A 0.5.1 não abre porta TCP no iPhone: cria um socket Unix com modo `0600`, acessível somente pelo usuário `mobile`, e o remove ao parar. O formato `ssh -L porta:socket_remoto` é suportado pelo OpenSSH para encaminhar uma porta TCP local a um socket Unix remoto.
+O primeiro teste físico da 0.5.0 retornou `EPERM` em `bind(AF_INET)` no sandbox do processo Câmera. O teste da 0.7.1 confirmou que o OpenSSH estava acessível, mas o sandbox também impedia criar os sockets globais em `/var/tmp`. A 0.7.2 usa primeiro o diretório temporário gravável da Câmera, conserva os caminhos globais como fallback e registra todas as tentativas. Os sockets usam modo `0600`, ficam acessíveis ao usuário `mobile` e são removidos ao parar. O formato `ssh -L porta:socket_remoto` encaminha uma porta TCP local a um socket Unix remoto.
 
 O servidor de controle existe enquanto o painel M7 está aberto e o app está em primeiro plano. Um novo painel recebe outro PIN. A webcam é ligada separadamente pela interface ou pelo comando `webcam.start`. Os dois servidores param quando a Câmera vai para segundo plano; a API volta com o mesmo PIN quando o painel retorna, enquanto a webcam permanece desligada até nova solicitação.
 
@@ -14,18 +14,18 @@ O serviço do Procursus aceita as portas 22 e 2222. O cliente abaixo testa ambas
 
 ## Preparar o iPhone e o Linux
 
-Descubra o IP do iPhone na rede local, abra M7 e confirme que a linha Remoto mostra `SSH 22 · API Unix` ou `SSH 2222 · API Unix`. No primeiro terminal do notebook:
+Abra M7, confirme que a linha Remoto mostra `SSH 22 · API Unix` ou `SSH 2222 · API Unix` e execute o pareamento recomendado:
 
 ```sh
-python3 tools/manual7_remote.py tunnel 192.168.1.50
+python3 tools/manual7_pair.py
 ```
 
-Se a porta 22 estiver ativa, isso executa o equivalente a:
+O callback autenticado informa os caminhos efetivos e o script executa o equivalente a:
 
 ```sh
 ssh -N \
-  -L 127.0.0.1:17837:/var/tmp/Manual7-api.sock \
-  -L 127.0.0.1:17838:/var/tmp/Manual7-webcam.sock \
+  -L 127.0.0.1:17837:<caminho informado>/m7a \
+  -L 127.0.0.1:17838:<caminho informado>/m7w \
   mobile@192.168.1.50
 ```
 
@@ -44,10 +44,12 @@ python3 tools/manual7_remote.py tunnel 192.168.1.50 --local-port 27837
 export MANUAL7_URL=http://127.0.0.1:27837
 ```
 
-Para escolher a porta SSH explicitamente:
+Para uma conexão manual, copie `unixSocketPath` e o caminho da webcam do diagnóstico e informe-os explicitamente:
 
 ```sh
-python3 tools/manual7_remote.py tunnel 192.168.1.50 --ssh-port 2222
+python3 tools/manual7_remote.py tunnel 192.168.1.50 --ssh-port 2222 \
+  --remote-socket /caminho/informado/para/api \
+  --webcam-remote-socket /caminho/informado/para/webcam
 ```
 
 `--remote-port 17837` mantém compatibilidade com o transporte TCP da 0.5.0, embora esse transporte tenha sido negado pelo sandbox no aparelho testado.

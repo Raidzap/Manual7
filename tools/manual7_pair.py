@@ -9,6 +9,7 @@ import http.server
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -16,7 +17,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 API_SOCKET = "/var/tmp/Manual7-api.sock"
@@ -81,6 +82,30 @@ def build_pairing_uri(callback: str, token: str, name: str) -> str:
     return f"manual7://pair?{query}"
 
 
+def validate_socket_path(value: Any, role: str) -> str:
+    long_name = "Manual7-api.sock" if role == "api" else "Manual7-webcam.sock"
+    short_name = "m7a" if role == "api" else "m7w"
+    if not isinstance(value, str) or not value.startswith("/") or ":" in value:
+        raise PairingError(f"socket {role} precisa ser um caminho absoluto sem dois-pontos")
+    if any(ord(character) < 32 for character in value) or len(value.encode()) >= 104:
+        raise PairingError(f"caminho do socket {role} é inválido")
+    path = PurePosixPath(value)
+    if path.name not in (long_name, short_name) or ".." in path.parts:
+        raise PairingError(f"nome do socket {role} é inválido")
+    allowed = (
+        f"/var/tmp/{long_name}", f"/tmp/{long_name}", f"/private/var/tmp/{long_name}",
+        f"/var/tmp/{short_name}", f"/tmp/{short_name}", f"/private/var/tmp/{short_name}",
+    )
+    escaped = re.escape(short_name)
+    container = re.fullmatch(
+        rf"/(?:private/)?var/mobile/Containers/Data/Application/[A-Za-z0-9-]+/tmp/{escaped}",
+        value,
+    )
+    if value not in allowed and not container:
+        raise PairingError(f"socket {role} fora dos diretórios permitidos")
+    return value
+
+
 def validate_result(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PairingError("resposta JSON precisa ser um objeto")
@@ -96,9 +121,12 @@ def validate_result(value: Any) -> dict[str, Any]:
         preferred = clean_ports[0] if clean_ports else 0
     if not preferred:
         raise PairingError("o M7 não encontrou o servidor OpenSSH ativo nas portas 22/2222")
-    if value.get("apiSocket") != API_SOCKET or value.get("webcamSocket") != WEBCAM_SOCKET:
-        raise PairingError("os sockets informados pelo M7 não correspondem ao protocolo esperado")
-    return {**value, "preferredSSHPort": preferred, "availableSSHPorts": clean_ports}
+    api_socket = validate_socket_path(value.get("apiSocket"), "api")
+    webcam_socket = validate_socket_path(value.get("webcamSocket"), "webcam")
+    if PurePosixPath(api_socket).parent != PurePosixPath(webcam_socket).parent:
+        raise PairingError("os sockets da API e webcam precisam usar o mesmo diretório")
+    return {**value, "preferredSSHPort": preferred, "availableSSHPorts": clean_ports,
+            "apiSocket": api_socket, "webcamSocket": webcam_socket}
 
 
 def handler_for(state: PairingState) -> type[http.server.BaseHTTPRequestHandler]:
@@ -186,8 +214,9 @@ def ssh_command(peer_ip: str, result: dict[str, Any], args: argparse.Namespace) 
     return [
         "ssh", "-N", "-p", str(port),
         "-o", "ExitOnForwardFailure=yes",
-        "-L", f"127.0.0.1:{args.local_port}:{API_SOCKET}",
-        "-L", f"127.0.0.1:{args.webcam_local_port}:{WEBCAM_SOCKET}",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-L", f"127.0.0.1:{args.local_port}:{result['apiSocket']}",
+        "-L", f"127.0.0.1:{args.webcam_local_port}:{result['webcamSocket']}",
         f"{args.user}@{peer_ip}",
     ]
 

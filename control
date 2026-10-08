@@ -1,6 +1,6 @@
 Package: dev.manual7.camera
 Name: Manual7
-Version: 0.7.1
+Version: 0.7.2
 Architecture: iphoneos-arm64
 Description: Manual photo/video camera, QR SSH pairing, and webcam with Bayer DNG, peaking, tracking, and 16:9/9:16 reframe for iPhone 7 Plus, iOS 15.
 Maintainer: Manual7

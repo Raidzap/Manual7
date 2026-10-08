@@ -1,6 +1,6 @@
 # Pareamento por QR no Linux
 
-O Manual7 0.7.1 elimina a digitação do IP do iPhone e do PIN. O script Linux abre um callback temporário na rede local, cria um QR de uso único e aguarda o M7. No iPhone, **Conexão → Ler QR do PC** usa os frames do visor e o Vision para reconhecer o código. O M7 envia ao callback o IP de origem do iPhone, o PIN atual e a porta OpenSSH que ele comprovou estar ativa; em seguida o script abre os túneis da API e da webcam.
+O Manual7 0.7.2 elimina a digitação do IP do iPhone, do PIN e dos caminhos dos sockets. O script Linux abre um callback temporário na rede local, cria um QR de uso único e aguarda o M7. No iPhone, **Conexão → Ler QR do PC** usa os frames do visor e o Vision para reconhecer o código. O M7 envia ao callback o IP de origem do iPhone, o PIN atual, a porta OpenSSH ativa e os endpoints Unix que conseguiu criar; em seguida o script abre os túneis da API e da webcam.
 
 O QR vence após 90 segundos por padrão. O token é aleatório, aceito uma vez, enviado ao `qrencode` pela entrada padrão e removido da memória de estado após o retorno. PIN e token não entram nos relatórios do M7. O callback aceita somente a rota de pareamento, limita o corpo a 16 KiB e vincula-se ao IPv4 privado escolhido no notebook.
 
@@ -28,13 +28,13 @@ O script detecta o IPv4 local, mostra o QR no terminal e escuta por até 90 segu
 1. Abra Câmera → **M7** e aguarde a linha Remoto mostrar `SSH 22` ou `SSH 2222`.
 2. Toque em **Ler QR do PC**.
 3. Aponte o visor para o QR do terminal.
-4. No Linux, confirme a chave do host e autentique o usuário `mobile` se o SSH solicitar.
+4. No primeiro acesso, o OpenSSH registra automaticamente a chave nova do iPhone em `known_hosts`. Autentique o usuário `mobile` se o SSH solicitar. Uma mudança posterior da chave continua sendo recusada.
 
 O terminal passa a manter os dois encaminhamentos:
 
 ```text
-127.0.0.1:17837 -> /var/tmp/Manual7-api.sock
-127.0.0.1:17838 -> /var/tmp/Manual7-webcam.sock
+127.0.0.1:17837 -> <temporário da Câmera>/m7a
+127.0.0.1:17838 -> <temporário da Câmera>/m7w
 ```
 
 O script mostra um comando `export MANUAL7_PIN=...` para uso em outro terminal. Depois disso, os comandos existentes continuam iguais:
@@ -63,7 +63,7 @@ python3 tools/manual7_pair.py --local-port 27837 --webcam-local-port 27838
 
 ## Diagnóstico
 
-O relatório registra `pairingScanStarted`, `pairingCodeRecognized`, `pairingAccepted`, rejeição, timeout, cancelamento e erro de rede. `pairing` contém estado, contadores, horários e somente host/porta do callback; token e PIN são omitidos. `sessionNow` informa se a leitura, análise ou submissão está ativa.
+O relatório registra `pairingScanStarted`, `pairingCodeRecognized`, `pairingAccepted`, rejeição, timeout, cancelamento e erro de rede. `pairing` contém estado, contadores, horários e somente host/porta do callback; token e PIN são omitidos. `remoteBindAttempts` mostra cada caminho tentado e o erro POSIX quando o socket não pôde ser criado. `sessionNow` informa se a leitura, análise ou submissão está ativa.
 
 Se o QR não for reconhecido, aumente o terminal, reduza reflexos, mantenha o código inteiro dentro do visor e tente novamente. Se o callback falhar, confira o firewall do notebook e o isolamento Wi-Fi. No iOS, permita acesso à rede local se o sistema apresentar a solicitação. O callback usa HTTP somente na LAN; o token de uso único autentica esse retorno curto. A sessão permanente, a API e o MJPEG continuam protegidos pelo OpenSSH.
 

@@ -1,8 +1,8 @@
 # Usar o Manual7 como webcam no Linux
 
-O Manual7 0.7.1 transmite o mesmo `AVCaptureVideoDataOutput` usado pelo visor e pelos controles da câmera. ISO, shutter, EV, foco manual, AE-L/AF-L, lente e rastreamento afetam os frames da webcam imediatamente. O M7 codifica MJPEG a 10 fps e oferece uma saída horizontal 1280 × 720 ou vertical 720 × 1280.
+O Manual7 0.7.2 transmite o mesmo `AVCaptureVideoDataOutput` usado pelo visor e pelos controles da câmera. ISO, shutter, EV, foco manual, AE-L/AF-L, lente e rastreamento afetam os frames da webcam imediatamente. O M7 codifica MJPEG a 10 fps e oferece uma saída horizontal 1280 × 720 ou vertical 720 × 1280.
 
-O fluxo permanece dentro do SSH: o iPhone cria `/var/tmp/Manual7-webcam.sock` com permissão `0600`, exige o PIN do painel M7 e não abre uma porta de rede própria. O cliente encaminha esse socket para `127.0.0.1:17838`; o FFmpeg lê o MJPEG autenticado e grava em um dispositivo virtual `v4l2loopback`.
+O fluxo permanece dentro do SSH: o iPhone cria o endpoint `m7w` no temporário gravável da Câmera, com fallback para `Manual7-webcam.sock`, usa permissão `0600`, exige o PIN do painel M7 e não abre uma porta de rede própria. O pareamento informa o caminho ao cliente, que encaminha o socket para `127.0.0.1:17838`; o FFmpeg lê o MJPEG autenticado e grava em um dispositivo virtual `v4l2loopback`.
 
 Esta primeira versão transmite somente vídeo. O focus peaking continua como guia no visor do iPhone e não é gravado no sinal da webcam. O Reframe da webcam produz um formato por vez; a opção **Ambos** continua disponível para gravações de vídeo locais.
 
@@ -24,14 +24,14 @@ ls -l /dev/video10
 Abra o M7 no iPhone, mantenha a Câmera em primeiro plano e anote o PIN. No primeiro terminal:
 
 ```sh
-python3 tools/manual7_remote.py tunnel 192.168.1.50
+python3 tools/manual7_pair.py
 ```
 
 Esse comando encaminha os dois sockets na mesma sessão SSH:
 
 ```text
-127.0.0.1:17837 -> /var/tmp/Manual7-api.sock
-127.0.0.1:17838 -> /var/tmp/Manual7-webcam.sock
+127.0.0.1:17837 -> <temporário da Câmera>/m7a
+127.0.0.1:17838 -> <temporário da Câmera>/m7w
 ```
 
 O cliente testa as portas SSH 22 e 2222. Use `--ssh-port 2222` para escolher explicitamente.

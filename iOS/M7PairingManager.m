@@ -126,10 +126,12 @@ NSDictionary *M7ParsePairingPayload(NSString *payload, NSError **error) {
 
 - (void)submitPairing:(NSDictionary *)pairing pin:(NSString *)pin
     preferredSSHPort:(NSNumber *)preferredSSHPort availableSSHPorts:(NSArray<NSNumber *> *)availableSSHPorts
+    apiSocketPath:(NSString *)apiSocketPath webcamSocketPath:(NSString *)webcamSocketPath
     completion:(void (^)(NSDictionary *, NSError *))completion {
     NSURL *url = pairing[@"callbackURL"];
     NSString *token = pairing[@"token"];
-    if (!url || !M7ValidToken(token) || pin.length != 6) {
+    if (!url || !M7ValidToken(token) || pin.length != 6 ||
+        ![apiSocketPath hasPrefix:@"/"] || ![webcamSocketPath hasPrefix:@"/"]) {
         if (completion) completion(nil, M7PairingError(5, @"Os dados de pareamento estão incompletos."));
         return;
     }
@@ -139,11 +141,11 @@ NSDictionary *M7ParsePairingPayload(NSString *payload, NSError **error) {
     deviceName = UIDevice.currentDevice.model ?: @"iPhone";
     systemVersion = UIDevice.currentDevice.systemVersion ?: @"";
 #endif
-    NSDictionary *body = @{ @"version":@"0.7.1", @"pin":pin,
+    NSDictionary *body = @{ @"version":@"0.7.2", @"pin":pin,
         @"preferredSSHPort":preferredSSHPort ?: @0,
         @"availableSSHPorts":availableSSHPorts ?: @[],
-        @"apiSocket":@"/var/tmp/Manual7-api.sock",
-        @"webcamSocket":@"/var/tmp/Manual7-webcam.sock",
+        @"apiSocket":apiSocketPath,
+        @"webcamSocket":webcamSocketPath,
         @"device":deviceName, @"systemVersion":systemVersion };
     NSError *jsonError = nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:&jsonError];

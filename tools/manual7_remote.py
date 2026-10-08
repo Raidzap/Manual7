@@ -199,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
               f"→ {target}:{args.webcam_remote_socket} via SSH {ssh_port}", file=sys.stderr)
         return subprocess.call(["ssh", "-p", str(ssh_port), "-N",
                                 "-L", forwarding, "-L", webcam_forwarding,
-                                "-o", "ExitOnForwardFailure=yes", target])
+                                "-o", "ExitOnForwardFailure=yes",
+                                "-o", "StrictHostKeyChecking=accept-new", target])
     if args.subcommand != "ping" and not args.pin:
         print("Informe --pin ou defina MANUAL7_PIN com o PIN mostrado no iPhone.", file=sys.stderr)
         return 2

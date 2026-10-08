@@ -116,6 +116,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) M7WebcamEncoder *webcamEncoder;
 @property (nonatomic) M7PairingManager *pairingManager;
 @property (nonatomic) NSString *remotePIN;
+@property (nonatomic) NSString *remoteSocketPath;
+@property (nonatomic) NSString *webcamSocketPath;
+@property (nonatomic) NSArray<NSDictionary *> *remoteBindAttempts;
 @property (nonatomic) NSMutableArray<NSDictionary *> *remoteEvents;
 @property (nonatomic) NSDictionary *openSSHStatus;
 @property (atomic) BOOL videoRecording;
@@ -247,8 +250,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.remotePIN = [NSString stringWithFormat:@"%06u", arc4random_uniform(900000)+100000];
     self.webcamEncoder = [M7WebcamEncoder new];
     self.pairingManager = [M7PairingManager new];
-    self.webcamServer = [[M7WebcamServer alloc] initWithUnixSocketPath:@"/var/tmp/Manual7-webcam.sock"
-        pin:self.remotePIN];
+    self.remoteBindAttempts = @[];
     self.videoBackgroundTask = UIBackgroundTaskInvalid;
     self.session = [AVCaptureSession new]; M7MarkSessionOwned(self.session);
     self.peakingThreshold = .2;
@@ -552,23 +554,64 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)startRemoteServer {
-    if (!self.remoteServer) {
-        __weak typeof(self) weakSelf = self;
-        self.remoteServer = [[M7RemoteServer alloc] initWithUnixSocketPath:@"/var/tmp/Manual7-api.sock"
-            pin:self.remotePIN
-            handler:^(NSDictionary *request, M7RemoteResponse response) {
-                typeof(self) owner = weakSelf;
-                if (!owner) { response(503, @{ @"ok":@NO, @"error":@"O painel M7 foi encerrado." }); return; }
-                [owner handleRemoteRequest:request response:response];
-            }];
-    }
+    __weak typeof(self) weakSelf = self;
+    M7RemoteRequestHandler handler = ^(NSDictionary *request, M7RemoteResponse response) {
+        typeof(self) owner = weakSelf;
+        if (!owner) { response(503, @{ @"ok":@NO, @"error":@"O painel M7 foi encerrado." }); return; }
+        [owner handleRemoteRequest:request response:response];
+    };
+    NSMutableArray<NSDictionary *> *attempts = [NSMutableArray new];
     NSError *error = nil;
-    BOOL started = [self.remoteServer start:&error];
+    BOOL started = self.remoteServer && [self.remoteServer start:&error];
+    if (self.remoteServer) [attempts addObject:@{ @"path":self.remoteSocketPath ?: @"",
+        @"success":@(started), @"error":M7ErrorDetails(error) }];
+    if (!started) {
+        [self.remoteServer stop];
+        self.remoteServer = nil;
+        self.webcamServer = nil;
+        self.remoteSocketPath = nil;
+        self.webcamSocketPath = nil;
+        NSMutableArray<NSString *> *directories = [NSMutableArray new];
+        NSString *temporary = [NSTemporaryDirectory() stringByStandardizingPath];
+        if (temporary.length) [directories addObject:temporary];
+        for (NSString *legacy in @[@"/var/tmp", @"/tmp"]) {
+            if (![directories containsObject:legacy]) [directories addObject:legacy];
+        }
+        for (NSString *directory in directories) {
+            BOOL isTemporary = [directory isEqual:temporary];
+            // Darwin limits sockaddr_un.sun_path to 104 bytes. A sandbox
+            // container UUID leaves room only for short endpoint names.
+            NSString *apiPath = [directory stringByAppendingPathComponent:
+                isTemporary ? @"m7a" : @"Manual7-api.sock"];
+            NSString *webcamPath = [directory stringByAppendingPathComponent:
+                isTemporary ? @"m7w" : @"Manual7-webcam.sock"];
+            M7RemoteServer *candidate = [[M7RemoteServer alloc] initWithUnixSocketPath:apiPath
+                pin:self.remotePIN handler:handler];
+            NSError *candidateError = nil;
+            BOOL candidateStarted = [candidate start:&candidateError];
+            error = candidateError;
+            [attempts addObject:@{ @"path":apiPath, @"directory":directory,
+                @"temporaryDirectory":@(isTemporary),
+                @"success":@(candidateStarted), @"error":M7ErrorDetails(candidateError) }];
+            if (!candidateStarted) continue;
+            self.remoteServer = candidate;
+            self.remoteSocketPath = apiPath;
+            self.webcamSocketPath = webcamPath;
+            self.webcamServer = [[M7WebcamServer alloc] initWithUnixSocketPath:webcamPath
+                pin:self.remotePIN];
+            error = nil;
+            started = YES;
+            break;
+        }
+    }
+    self.remoteBindAttempts = attempts;
     self.remoteLabel.textColor = started ? UIColor.systemYellowColor : UIColor.systemRedColor;
     self.remoteLabel.text = started ? [NSString stringWithFormat:@"OpenSSH… · API Unix · PIN %@",
         self.remotePIN] : @"API remota indisponível · ver diagnóstico";
     [self recordRemoteEvent:started ? @"serverStarted" : @"serverStartFailed" requestID:@""
-        details:@{ @"server":self.remoteServer.snapshot, @"error":M7ErrorDetails(error) }];
+        details:@{ @"server":self.remoteServer.snapshot ?: @{}, @"error":M7ErrorDetails(error),
+            @"bindAttempts":attempts, @"temporaryDirectory":NSTemporaryDirectory() ?: @"",
+            @"homeDirectory":NSHomeDirectory() ?: @"" }];
     dispatch_async(self.sessionQueue, ^{
         NSDictionary *status = M7OpenSSHStatus();
         self.openSSHStatus = status;
@@ -676,7 +719,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.1", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.2", @"state":state });
             }];
         });
         return;
@@ -931,7 +974,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.1";
+    self.captureTrace[@"version"] = @"0.7.2";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1098,7 +1141,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
     diagnostic[@"rawCompatibility"] = rawCompatibility;
-    diagnostic[@"version"] = @"0.7.1";
+    diagnostic[@"version"] = @"0.7.2";
     self.lensDiagnostic = diagnostic;
     [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
@@ -1184,6 +1227,13 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             [self finishPairingUI:@"Aguarde a linha Remoto mostrar uma porta SSH ativa."];
             return;
         }
+        if (!self.remoteServer.isRunning || !self.remoteSocketPath.length || !self.webcamSocketPath.length) {
+            [self recordSessionEvent:@"pairingScanRejected" details:@{ @"reason":@"remoteAPIUnavailable",
+                @"remoteServer":self.remoteServer.snapshot ?: @{},
+                @"bindAttempts":self.remoteBindAttempts ?: @[] }];
+            [self finishPairingUI:@"A API remota não iniciou. Abra Exportar → Ver diagnóstico."];
+            return;
+        }
         BOOL outputReady = [self.session.outputs containsObject:self.videoOutput];
         if (!outputReady && !self.videoModeActive) outputReady = [self configurePeakingOutput:YES];
         if (!outputReady) {
@@ -1260,7 +1310,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 @"availableSSHPorts":ports }];
             dispatch_async(self.pairingQueue, ^{
                 [self.pairingManager submitPairing:pairing pin:self.remotePIN preferredSSHPort:preferred
-                    availableSSHPorts:ports completion:^(NSDictionary *response, NSError *error) {
+                    availableSSHPorts:ports apiSocketPath:self.remoteSocketPath
+                    webcamSocketPath:self.webcamSocketPath
+                    completion:^(NSDictionary *response, NSError *error) {
                     if (generation != self.pairingGeneration) return;
                     self.pairingSubmitting = NO;
                     dispatch_async(self.sessionQueue, ^{
@@ -1743,7 +1795,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.1";
+    self.videoTrace[@"version"] = @"0.7.2";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -2454,11 +2506,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.1", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.2", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
-        @"pairing":[self.pairingManager snapshot],
+        @"pairing":[self.pairingManager snapshot], @"remoteBindAttempts":self.remoteBindAttempts ?: @[],
         @"remoteServer":self.remoteServer.snapshot ?: @{}, @"remoteEvents":self.remoteEvents ?: @[],
         @"openSSH":self.openSSHStatus ?: @{},
         @"pendingVideos":pendingVideoDetails,
@@ -2482,7 +2534,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.1", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.2", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -2530,7 +2582,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.1" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.2" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];

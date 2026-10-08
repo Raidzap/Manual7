@@ -21,6 +21,8 @@ FOUNDATION_EXPORT NSDictionary * _Nullable M7ParsePairingPayload(NSString *paylo
     pin:(NSString *)pin
     preferredSSHPort:(NSNumber *)preferredSSHPort
     availableSSHPorts:(NSArray<NSNumber *> *)availableSSHPorts
+    apiSocketPath:(NSString *)apiSocketPath
+    webcamSocketPath:(NSString *)webcamSocketPath
     completion:(void (^)(NSDictionary * _Nullable response, NSError * _Nullable error))completion;
 
 - (void)cancel;

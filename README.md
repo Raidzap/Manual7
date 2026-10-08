@@ -1,14 +1,20 @@
-# Manual7 — 0.7.1 experimental
+# Manual7 — 0.7.2 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.1 corrige a configuração que ainda estava implícita: valida Bayer contra o contêiner DNG, solicita `AVFileTypeDNG`, desliga a estabilização, prepara os buffers RAW antecipadamente e aguarda a estabilização do sensor. Essa correção precisa ser validada no aparelho. A 0.2.0 acrescentou vídeo e Reframe, a 0.3.0 rastreamento, a 0.4.0 controle remoto, a 0.5.0 OpenSSH, a 0.6.0 webcam MJPEG e a 0.7.0 pareamento por QR. **RAW 0.7.1, vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.1 corrige a configuração que ainda estava implícita: valida Bayer contra o contêiner DNG, solicita `AVFileTypeDNG`, desliga a estabilização, prepara os buffers RAW antecipadamente e aguarda a estabilização do sensor. A 0.7.2 corrige a API remota após o teste físico confirmar que o SSH funcionava, mas o sandbox da Câmera não criava `/var/tmp/Manual7-api.sock`. **RAW 0.7.1, vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física no iPhone.**
 
 ## OpenSSH e controle remoto
 
 O pacote agora declara `openssh-server` como dependência. Durante a instalação pelo Sileo ou `apt`, o pacote oficial do Procursus instala o `sshd`, gera as chaves exclusivas do aparelho e registra `com.openssh.sshd` no `launchd`. O M7 não inclui senha, chave privada ou cópia própria dos binários do OpenSSH.
 
-O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 2222. A linha **Remoto** mostra a porta SSH ativa, `API Unix` e o PIN. O mesmo estado aparece em `state.openSSH` e `openSSH` no diagnóstico. O servidor HTTP/JSON usa somente `/var/tmp/Manual7-api.sock`, com permissão `0600`; o cliente OpenSSH encaminha esse socket para `127.0.0.1:17837` no notebook. O socket é removido quando a API para. O PIN de seis dígitos é renovado quando um novo painel M7 é aberto e é exigido em todas as rotas de estado, diagnóstico e comando.
+O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 2222. A linha **Remoto** mostra a porta SSH ativa, `API Unix` e o PIN. O mesmo estado aparece em `state.openSSH` e `openSSH` no diagnóstico. O servidor tenta primeiro o diretório temporário gravável do processo Câmera e conserva `/var/tmp` como fallback; o QR entrega ao cliente o caminho que realmente foi criado. O socket usa permissão `0600`, é encaminhado para `127.0.0.1:17837` e é removido quando a API para. O PIN de seis dígitos é renovado quando um novo painel M7 é aberto e é exigido em todas as rotas de estado, diagnóstico e comando.
+
+## Correção da API remota na 0.7.2
+
+O teste físico confirmou que o notebook alcançava as portas 22 e 2222 e autenticava no OpenSSH, enquanto `/var/tmp/Manual7-api.sock` e `/var/tmp/Manual7-webcam.sock` não existiam. A linha `SSH 22 · API indisponível` isolou a falha no `bind(AF_UNIX)` executado dentro do sandbox da Câmera.
+
+A 0.7.2 tenta `NSTemporaryDirectory()` antes dos caminhos globais. Cada tentativa registra caminho, resultado, operação, domínio, código POSIX, diretório temporário e home em `remoteBindAttempts` e `remoteEvents`. O pareamento envia os caminhos efetivos da API e da webcam; o cliente valida que eles pertencem ao temporário do contêiner da Câmera ou aos fallbacks conhecidos e usa esses valores diretamente nos dois `ssh -L`.
 
 O cliente `tools/manual7_remote.py`, feito apenas com a biblioteca padrão do Python, consulta estado, copia diagnóstico, fotografa, inicia/para vídeo e webcam, repete salvamentos pendentes e altera modo, lente, exposição, ISO, shutter, EV, foco, RAW, tamanho JPEG, Reframe, tracking e peaking. Cada requisição aceita, recusada ou malformada é contabilizada; comandos e resultados aparecem em `remoteEvents`, e comandos feitos durante vídeo também entram em `lastVideo.events`. O PIN não é registrado.
 
@@ -22,7 +28,7 @@ O token do QR vence, só funciona uma vez e não é gravado. O PIN também conti
 
 ## Webcam SSH na 0.6.0
 
-O controle **Webcam** inicia um servidor MJPEG em `/var/tmp/Manual7-webcam.sock`, também com permissão `0600` e autenticação pelo PIN atual. O túnel do cliente encaminha simultaneamente a API para `127.0.0.1:17837` e o vídeo para `127.0.0.1:17838`. No Linux, `webcam-feed` usa FFmpeg para alimentar uma câmera virtual `v4l2loopback` que pode ser selecionada no OBS, navegador ou aplicativo de reunião.
+O controle **Webcam** inicia um servidor MJPEG no mesmo diretório Unix selecionado para a API, também com permissão `0600` e autenticação pelo PIN atual. O túnel do cliente encaminha simultaneamente a API para `127.0.0.1:17837` e o vídeo para `127.0.0.1:17838`. No Linux, `webcam-feed` usa FFmpeg para alimentar uma câmera virtual `v4l2loopback` que pode ser selecionada no OBS, navegador ou aplicativo de reunião.
 
 Os frames vêm da mesma saída AVFoundation e recebem as alterações de ISO, shutter, EV, foco, travas e lente. **WC formato** escolhe 1280 × 720 horizontal ou 720 × 1280 vertical. Quando **Rastrear** está ativo, o centro suavizado da pessoa/rosto dirige o recorte da webcam. O encoder limita a saída a 10 fps e só trabalha quando há cliente conectado; frames novos são ignorados enquanto o anterior ainda está sendo codificado, evitando acumular uma fila no A10.
 
@@ -137,18 +143,18 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.7.1](https://github.com/Raidzap/Manual7/releases/tag/v0.7.1).
+Baixe o pacote `.deb` e seu checksum na [pré-release v0.7.2](https://github.com/Raidzap/Manual7/releases/tag/v0.7.2).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
 2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes do bootstrap.
-3. Transfira `dev.manual7.camera_0.7.1_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
+3. Transfira `dev.manual7.camera_0.7.2_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
 cd /var/mobile/Downloads
-sudo apt install ./dev.manual7.camera_0.7.1_iphoneos-arm64.deb
+sudo apt install ./dev.manual7.camera_0.7.2_iphoneos-arm64.deb
 ```
 
 Use `apt` ou Sileo nesta versão: `dpkg -i` sozinho não baixa uma dependência ausente. O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. As dependências `mobilesubstrate` e `openssh-server` são fornecidas pelo ambiente rootless/Procursus; o script do OpenSSH carrega o serviço no `launchd`.
@@ -230,7 +236,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 `bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill central e móvel e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. `bash tests/run_subject_tracker_native.sh` executa o caminho sem pessoa em um pixel buffer real, conferindo rastros temporizados, estado, reset e JSON. Esses testes exigem macOS e não simulam câmera, microfone, PhotoKit, temperatura, uma pessoa real ou capacidade de codificação do iPhone.
 
-A suíte da 0.7.1 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar os transportes TCP e Unix da API, o socket MJPEG, o parser/retorno de pareamento, o caminho de análise Vision, tokens de uso único, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comandos dos clientes Python. O runner macOS hospedado não reconheceu o QR sintético porque o serviço `AppleM2ScalerCSCDriver` não está disponível; o reconhecimento positivo continua como validação obrigatória no iPhone.
+A suíte da 0.7.2 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar os transportes TCP e Unix da API, o socket MJPEG, caminhos temporários dinâmicos dentro do limite de 104 bytes do Darwin, o parser/retorno de pareamento, o caminho de análise Vision, tokens de uso único, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comandos dos clientes Python. O runner macOS hospedado não reconheceu o QR sintético porque o serviço `AppleM2ScalerCSCDriver` não está disponível; o reconhecimento positivo continua como validação obrigatória no iPhone.
 
 A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37858670404).
 

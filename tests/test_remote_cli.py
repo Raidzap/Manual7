@@ -120,6 +120,7 @@ class RemoteCLITests(unittest.TestCase):
         self.assertEqual(forwards, [
             "127.0.0.1:17837:/var/tmp/Manual7-api.sock",
             "127.0.0.1:17838:/var/tmp/Manual7-webcam.sock"])
+        self.assertIn("StrictHostKeyChecking=accept-new", argv)
 
     def test_webcam_start_sets_format_then_starts(self):
         with mock.patch.object(REMOTE, "command",

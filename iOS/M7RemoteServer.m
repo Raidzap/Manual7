@@ -328,7 +328,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         @synchronized (self) { ++self.acceptedRequests; self.lastRequestAt = NSDate.date.timeIntervalSince1970; }
         NSString *path = request[@"path"];
         if ([path isEqual:@"/v1/ping"]) {
-            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.7.1",
+            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.7.2",
                 @"transport":self.transport ?: @"", @"port":@(self.port),
                 @"authentication":@"X-Manual7-PIN" } socket:client];
             return;
@@ -374,7 +374,8 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
             lstat(self.unixSocketPath.fileSystemRepresentation, &info) == 0;
         NSString *binding = [self.transport isEqual:@"unix"] ? (self.unixSocketPath ?: @"") : @"127.0.0.1";
         return @{ @"running":@(self.running), @"transport":self.transport ?: @"", @"bind":binding,
-            @"port":@(self.port), @"unixSocketPath":self.unixSocketPath ?: @"",
+            @"port":@(self.port), @"requestedUnixSocketPath":self.requestedUnixSocketPath ?: @"",
+            @"unixSocketPath":self.unixSocketPath ?: @"",
             @"unixSocketExists":@(unixSocketExists),
             @"unixSocketPermissions":unixSocketExists ?
                 [NSString stringWithFormat:@"%04o", (unsigned int)(info.st_mode & 0777)] : @"",

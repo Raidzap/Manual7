@@ -21,7 +21,7 @@ SPEC.loader.exec_module(PAIR)
 class PairingCLITests(unittest.TestCase):
     def payload(self):
         return {
-            "version": "0.7.1",
+            "version": "0.7.2",
             "pin": "123456",
             "preferredSSHPort": 22,
             "availableSSHPorts": [22, 2222],
@@ -48,12 +48,21 @@ class PairingCLITests(unittest.TestCase):
             with self.assertRaises(argparse.ArgumentTypeError):
                 PAIR.private_ipv4(address)
 
-    def test_result_validation_rejects_pin_port_and_socket_changes(self):
+    def test_result_validation_accepts_temporary_camera_container_sockets(self):
+        payload = self.payload()
+        directory = "/private/var/mobile/Containers/Data/Application/01234567-89AB-CDEF-0123-456789ABCDEF/tmp"
+        payload["apiSocket"] = directory + "/m7a"
+        payload["webcamSocket"] = directory + "/m7w"
+        result = PAIR.validate_result(payload)
+        self.assertEqual(result["apiSocket"], payload["apiSocket"])
+
+    def test_result_validation_rejects_pin_port_and_unsafe_socket_changes(self):
         self.assertEqual(PAIR.validate_result(self.payload())["preferredSSHPort"], 22)
         for key, value in (
             ("pin", "123"),
             ("availableSSHPorts", []),
             ("apiSocket", "/tmp/other.sock"),
+            ("apiSocket", "/etc/Manual7-api.sock"),
         ):
             changed = self.payload()
             changed[key] = value
@@ -91,13 +100,18 @@ class PairingCLITests(unittest.TestCase):
         self.assertEqual(state.result["pin"], "123456")
         self.assertEqual(state.rejected, 2)
 
-    def test_ssh_command_forwards_both_fixed_sockets_without_shell(self):
+    def test_ssh_command_forwards_both_reported_sockets_without_shell(self):
         args = argparse.Namespace(ssh_port=None, local_port=17837,
                                   webcam_local_port=17838, user="mobile")
-        command = PAIR.ssh_command("192.168.1.50", self.payload(), args)
+        payload = self.payload()
+        directory = "/private/var/mobile/Containers/Data/Application/01234567-89AB-CDEF-0123-456789ABCDEF/tmp"
+        payload["apiSocket"] = directory + "/m7a"
+        payload["webcamSocket"] = directory + "/m7w"
+        command = PAIR.ssh_command("192.168.1.50", payload, args)
         self.assertEqual(command[0], "ssh")
-        self.assertIn("127.0.0.1:17837:/var/tmp/Manual7-api.sock", command)
-        self.assertIn("127.0.0.1:17838:/var/tmp/Manual7-webcam.sock", command)
+        self.assertIn("127.0.0.1:17837:" + payload["apiSocket"], command)
+        self.assertIn("127.0.0.1:17838:" + payload["webcamSocket"], command)
+        self.assertIn("StrictHostKeyChecking=accept-new", command)
         self.assertEqual(command[-1], "mobile@192.168.1.50")
 
     def test_qrencode_arguments_do_not_use_a_shell(self):

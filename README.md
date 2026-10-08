@@ -238,7 +238,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 A suíte da 0.7.2 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar os transportes TCP e Unix da API, o socket MJPEG, caminhos temporários dinâmicos dentro do limite de 104 bytes do Darwin, o parser/retorno de pareamento, o caminho de análise Vision, tokens de uso único, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comandos dos clientes Python. O runner macOS hospedado não reconheceu o QR sintético porque o serviço `AppleM2ScalerCSCDriver` não está disponível; o reconhecimento positivo continua como validação obrigatória no iPhone.
 
-A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37858670404).
+A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37860682640).
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 

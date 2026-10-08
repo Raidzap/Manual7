@@ -1,5 +1,5 @@
-Manual7 0.7.0 — registro de build
-Data UTC: 2026-10-08T23:05:22Z
+Manual7 0.7.1 — registro de build
+Data UTC: 2026-10-08T23:17:36Z
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
@@ -7,23 +7,18 @@ Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
 Testes Linux: 31 aprovados, incluindo Core/C, contratos de callbacks com SDK iOS, clientes Python e contrato do pacote.
-Testes nativos macOS: seleção de captura, erros, armazenamento, JPEG/ImageIO, Reframe central/dinâmico, gravador, Vision, servidor remoto TCP/Unix, encoder 16:9/9:16, servidor multipart MJPEG, permissões/limpeza dos sockets, detector OpenSSH, parser QR, caminho de análise de barcode e Core aprovados.
-CI aprovado: https://github.com/Raidzap/Manual7/actions/runs/37857345751
-Commit testado: 0c75a127442c017046284ae3d219c90482f67953
+Teste RAW nativo: seleção pela interseção disponível/Bayer/DNG, FourCC rgg4 e snapshot JSON adicionado ao CI macOS.
+Commit da implementação testada: 1ce7d9e623534665e345824a3195b66ea5e8edca
+RAW físico anterior: RAW e RAW+JPEG falharam com AVFoundation -11800 / OSStatus -12780 antes de produzir pixel buffer ou bytes.
+Correção 0.7.1: valida AVFileTypeDNG e supportedRawPhotoPixelFormatTypesForFileType, solicita DNG explícito, desliga estabilização automática e usa prioridade Speed.
+Preparação RAW: setPreparedPhotoSettingsArray antecipa buffers RAW e RAW+JPEG após cada troca de lente/topologia; o disparo espera preparação e estabilização do sensor por até três segundos.
+Diagnóstico RAW: inventário de contêineres e formatos, FourCC, classificação Bayer, interseção DNG, formato selecionado, preparação, propriedades efetivas e cadeia NSError completa.
 Pareamento QR: script Linux com callback temporário, IPv4 RFC1918/link-local, token aleatório de uso único, validade configurável, limite de 16 KiB, Content-Type JSON e derivação do IP pelo peer da conexão.
 Leitor M7: botão Ler QR do PC, Vision limitado a 3 Hz, timeout de 30 s, validação de URI/esquema/endereço/porta/token, espera de conectividade e cancelamento no segundo plano, interrupção, fechamento ou ação do usuário.
 Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe o payload pela entrada padrão. O PIN é entregue somente no corpo autenticado do callback e exibido no terminal para os comandos locais.
-Diagnóstico QR: pairing e sessionNow registram estado, contadores, host/porta, tempos e erros; sessionEvents distingue início, reconhecimento, aceitação, rejeição, timeout e cancelamento.
-Limite do runner: o macOS hospedado informou AppleM2ScalerCSCDriver indisponível e não produziu observação para o QR sintético. Parser, compilação e caminho sem observação foram validados; reconhecimento positivo e callback NSURLSession continuam obrigatórios no iPhone.
-Controle remoto: HTTP/JSON em `/var/tmp/Manual7-api.sock`, modo 0600, PIN aleatório por painel, timeout, limite de corpo, contadores e remoção no segundo plano/fechamento.
-Cliente Linux: túnel SSH duplo da API em 127.0.0.1:17837 e MJPEG em 127.0.0.1:17838, estado, diagnóstico, foto, gravação, webcam, repetição de salvamento e alteração dos controles M7 expostos.
-OpenSSH: dependência oficial `openssh-server` do Procursus, detecção de `/var/jb`, plist, configuração, chaves e portas 22/2222; nenhum segredo incluído.
-Vídeo: master H.264 em tempo real, AAC quando disponível, formato 4:3 preferencial a 30 fps.
-Reframe: 1920 × 1080, 1080 × 1920 ou ambos, central ou rastreado, derivados do mesmo master.
-Rastreamento: Vision de pessoa/tronco superior com rosto como fallback, máximo de 5 Hz, suavização e rampas temporais.
-Webcam: MJPEG autenticado em `/var/tmp/Manual7-webcam.sock`, modo 0600, 1280 × 720 ou 720 × 1280, alvo de 10 fps, qualidade 0,72, recorte central ou rastreado e somente vídeo.
-Linux/V4L2: cliente FFmpeg para `v4l2loopback`, formato estável por conexão e parada automática; focus peaking não é queimado nos frames.
-Estado informado pelo usuário: JPEG salva. RAW 0.1.5 falha com −11800 / −12780; teste RAW+JPEG 0.1.6 ainda não executado.
-Diagnóstico físico 0.5.0: `bind(AF_INET)` foi negado com POSIX 1/EPERM no processo Câmera; o relatório inicialmente descrevia o erro como porta ocupada.
-Validação física 0.7.0: ainda não realizada; precisa confirmar leitura QR, permissão de rede local/callback, sockets Unix, encaminhamento OpenSSH, MJPEG/V4L2, câmera, PhotoKit, latência, térmica e desempenho do Core Image/Vision no A10.
-SHA-256 do .deb: 1f54ea7f1cf51dbe954948e2c7b11027d629512c1f0d65fe990b9333c80b5eb9
+Controle remoto: HTTP/JSON em /var/tmp/Manual7-api.sock, modo 0600, PIN aleatório por painel, timeout, limite de corpo, contadores e remoção no segundo plano/fechamento.
+OpenSSH: dependência oficial openssh-server do Procursus, detecção de /var/jb, plist, configuração, chaves e portas 22/2222; nenhum segredo incluído.
+Vídeo/Reframe: master H.264 4:3 a 30 fps, AAC quando disponível, exportação 1920x1080, 1080x1920 ou ambas, central ou rastreada.
+Webcam: MJPEG autenticado em /var/tmp/Manual7-webcam.sock, modo 0600, 1280x720 ou 720x1280, alvo de 10 fps, recorte central ou rastreado e somente vídeo.
+Validação física 0.7.1: pendente; executar Testar RAW DNG explícito e copiar o relatório automático mesmo se a foto for salva.
+SHA-256 do .deb: 9efd21206702fe2ef6c140e766d73f6862bfe2ffe3d5cb1597b38155000728a9

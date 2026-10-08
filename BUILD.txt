@@ -8,6 +8,7 @@ Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
 Testes Linux: 31 aprovados, incluindo Core/C, contratos de callbacks com SDK iOS, clientes Python e contrato do pacote.
 Teste RAW nativo: seleção pela interseção disponível/Bayer/DNG, FourCC rgg4 e snapshot JSON adicionado ao CI macOS.
+CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/37858670404
 Commit da implementação testada: 1ce7d9e623534665e345824a3195b66ea5e8edca
 RAW físico anterior: RAW e RAW+JPEG falharam com AVFoundation -11800 / OSStatus -12780 antes de produzir pixel buffer ou bytes.
 Correção 0.7.1: valida AVFileTypeDNG e supportedRawPhotoPixelFormatTypesForFileType, solicita DNG explícito, desliga estabilização automática e usa prioridade Speed.

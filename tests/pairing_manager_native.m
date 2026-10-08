@@ -7,8 +7,18 @@
 static CVPixelBufferRef QRPixelBuffer(NSString *message) {
     CIFilter *filter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
     [filter setValue:[message dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
-    [filter setValue:@"M" forKey:@"inputCorrectionLevel"];
-    CIImage *image = [filter.outputImage imageByApplyingTransform:CGAffineTransformMakeScale(12, 12)];
+    [filter setValue:@"L" forKey:@"inputCorrectionLevel"];
+    CIImage *code = filter.outputImage;
+    // CIQRCodeGenerator has no quiet zone. Vision expects the four white
+    // modules that a printed/displayed QR normally has around the code.
+    CGRect quietExtent = CGRectInset(code.extent, -4, -4);
+    CIImage *white = [[CIImage imageWithColor:[CIColor colorWithRed:1 green:1 blue:1 alpha:1]]
+        imageByCroppingToRect:quietExtent];
+    CIImage *image = [[code imageByCompositingOverImage:white]
+        imageByApplyingTransform:CGAffineTransformMakeScale(10, 10)];
+    CGRect untranslated = CGRectIntegral(image.extent);
+    image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(
+        -untranslated.origin.x, -untranslated.origin.y)];
     CGRect extent = CGRectIntegral(image.extent);
     NSDictionary *attributes = @{(id)kCVPixelBufferCGImageCompatibilityKey:@YES,
         (id)kCVPixelBufferCGBitmapContextCompatibilityKey:@YES};

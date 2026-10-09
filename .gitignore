@@ -3,3 +3,5 @@ packages/
 __pycache__/
 *.pyc
 manual7-pair.png
+desktop/node_modules/
+desktop/dist/

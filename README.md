@@ -4,6 +4,10 @@ Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o
 
 **Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.1 corrige a configuração que ainda estava implícita. A 0.7.4 move a API remota para um bridge `launchd` fora do sandbox da Câmera e inicia toda a camada remota em segundo plano, com timeout de conexão de 250 ms, sem atrasar o visor e os controles. **RAW, vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física completa no iPhone.**
 
+## Manual7 Studio para Linux
+
+O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH, visor MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.0](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.0).
+
 ## OpenSSH e controle remoto
 
 O pacote agora declara `openssh-server` como dependência. Durante a instalação pelo Sileo ou `apt`, o pacote oficial do Procursus instala o `sshd`, gera as chaves exclusivas do aparelho e registra `com.openssh.sshd` no `launchd`. O M7 não inclui senha, chave privada ou cópia própria dos binários do OpenSSH.

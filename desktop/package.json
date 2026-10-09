@@ -1,0 +1,41 @@
+{
+  "name": "manual7-studio",
+  "version": "0.1.0",
+  "description": "Interface Linux para pareamento, preview e controle remoto do Manual7",
+  "author": "Manual7 contributors",
+  "desktopName": "manual7-studio.desktop",
+  "main": "src/main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "build:appimage": "electron-builder --linux AppImage --x64"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "dev.manual7.studio",
+    "productName": "Manual7 Studio",
+    "artifactName": "Manual7-Studio-${version}-${arch}.${ext}",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo",
+      "icon": "assets/icon.png",
+      "syncDesktopName": true
+    }
+  }
+}

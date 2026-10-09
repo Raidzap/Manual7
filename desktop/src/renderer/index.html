@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: http://127.0.0.1:*; style-src 'self'; script-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'">
+  <title>Manual7 Studio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><span>M7</span></div>
+      <div><strong>Manual7 Studio</strong><small>iPhone camera control</small></div>
+    </div>
+    <div class="header-actions">
+      <div id="connectionPill" class="connection-pill offline"><span></span><b>Desconectado</b></div>
+      <button id="diagnosticButton" class="button ghost" disabled>Salvar diagnóstico</button>
+      <button id="connectButton" class="button primary">Parear iPhone</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="monitor-panel">
+      <div class="monitor-topline">
+        <div>
+          <span class="eyebrow">RETORNO DA CÂMERA</span>
+          <h1 id="monitorTitle">Aguardando conexão</h1>
+        </div>
+        <div class="monitor-actions">
+          <div id="webcamFormat" class="segmented compact" data-control="webcamFormat">
+            <button data-value="horizontal" class="selected">16:9</button>
+            <button data-value="vertical">9:16</button>
+          </div>
+          <button id="previewButton" class="button lime" disabled>Iniciar retorno</button>
+        </div>
+      </div>
+
+      <div id="viewport" class="viewport landscape">
+        <div class="empty-preview">
+          <div class="aperture" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <strong>O visor aparecerá aqui</strong>
+          <span>Pareie o iPhone e inicie o retorno da webcam.</span>
+        </div>
+        <img id="previewImage" alt="Retorno ao vivo da câmera do iPhone">
+        <div class="safe-frame"></div>
+        <div class="live-chip"><span></span><b id="liveLabel">OFFLINE</b></div>
+        <div class="viewport-footer">
+          <div><small>ISO</small><b id="hudISO">—</b></div>
+          <div><small>SHUTTER</small><b id="hudShutter">—</b></div>
+          <div><small>EV</small><b id="hudEV">—</b></div>
+          <div><small>FOCO</small><b id="hudFocus">—</b></div>
+          <div><small>LENTE</small><b id="hudLens">—</b></div>
+        </div>
+      </div>
+
+      <div class="transport-bar">
+        <div class="mode-stack">
+          <span>Modo</span>
+          <div id="captureMode" class="segmented" data-control="captureMode">
+            <button data-value="photo" class="selected">Foto</button>
+            <button data-value="video">Vídeo</button>
+          </div>
+        </div>
+        <button id="captureButton" class="shutter" disabled aria-label="Fotografar"><span></span></button>
+        <div class="transport-copy"><strong id="captureLabel">Fotografar</strong><small id="captureHint">O controle será liberado após conectar.</small></div>
+      </div>
+
+      <div class="virtual-camera-bar">
+        <div><span class="eyebrow">CÂMERA VIRTUAL LINUX</span><strong id="virtualCameraStatus">Saída desativada</strong><small id="virtualCameraHint">Requer FFmpeg e um dispositivo v4l2loopback.</small></div>
+        <select id="virtualCameraDevice" disabled><option value="">Nenhum dispositivo virtual</option></select>
+        <button id="virtualCameraButton" class="button ghost" disabled>Transmitir para o Linux</button>
+      </div>
+    </section>
+
+    <aside class="control-panel" aria-label="Controles da câmera">
+      <div class="panel-heading"><span class="eyebrow">CONTROLES</span><b id="syncLabel">Sem sincronização</b></div>
+
+      <section class="control-card">
+        <div class="card-title"><span>Óptica</span><output id="lensValue">—</output></div>
+        <div id="lens" class="segmented wide" data-control="lens">
+          <button data-value="wide" class="selected">1× Wide</button>
+          <button data-value="tele">2× Tele</button>
+        </div>
+      </section>
+
+      <section class="control-card">
+        <div class="card-title"><span>Exposição</span><output id="exposureReadout">—</output></div>
+        <div id="exposureMode" class="segmented wide" data-control="exposureMode">
+          <button data-value="auto" class="selected">Auto</button>
+          <button data-value="manual">Manual</button>
+          <button data-value="lock">AE-L</button>
+        </div>
+        <label class="range-control" for="isoSlider"><span>ISO</span><output id="isoValue">—</output></label>
+        <input id="isoSlider" type="range" min="0" max="1000" value="0" disabled>
+        <label class="range-control" for="shutterSlider"><span>Shutter · ⅓ stop</span><output id="shutterValue">—</output></label>
+        <input id="shutterSlider" type="range" min="-52" max="-5" value="-20" step="1" disabled>
+        <label class="range-control" for="evSlider"><span>Compensação</span><output id="evValue">0 EV</output></label>
+        <input id="evSlider" type="range" min="-24" max="24" value="0" step="1" disabled>
+      </section>
+
+      <section class="control-card">
+        <div class="card-title"><span>Foco</span><output id="focusReadout">—</output></div>
+        <div id="focusMode" class="segmented wide" data-control="focusMode">
+          <button data-value="auto" class="selected">AF</button>
+          <button data-value="manual">Manual</button>
+          <button data-value="lock">AF-L</button>
+        </div>
+        <label class="range-control" for="focusSlider"><span>Perto <i>→</i> longe</span><output id="focusValue">—</output></label>
+        <input id="focusSlider" type="range" min="0" max="1000" value="500" disabled>
+        <div class="switch-row">
+          <label for="peakingToggle"><span>Focus peaking</span><small>Guia verde no visor do iPhone</small></label>
+          <input id="peakingToggle" type="checkbox" role="switch" disabled>
+        </div>
+        <label class="range-control subtle" for="peakingSlider"><span>Limiar do peaking</span><output id="peakingValue">0,20</output></label>
+        <input id="peakingSlider" type="range" min="30" max="600" value="200" disabled>
+      </section>
+
+      <section class="control-card">
+        <div class="card-title"><span>Captura e enquadramento</span></div>
+        <div class="switch-row">
+          <label for="rawToggle"><span>DNG RAW</span><small>Arquivo Bayer original</small></label>
+          <input id="rawToggle" type="checkbox" role="switch" disabled>
+        </div>
+        <label class="select-row" for="jpegSize"><span>Tamanho JPEG</span>
+          <select id="jpegSize" disabled>
+            <option value="0">Original</option><option value="3264">3264 px</option>
+            <option value="2560">2560 px</option><option value="2048">2048 px</option>
+            <option value="1600">1600 px</option><option value="1280">1280 px</option>
+          </select>
+        </label>
+        <label class="select-row" for="videoFormat"><span>Reframe de vídeo</span>
+          <select id="videoFormat" disabled>
+            <option value="horizontal">16:9</option><option value="vertical">9:16</option>
+            <option value="both">Ambos</option>
+          </select>
+        </label>
+        <div class="switch-row">
+          <label for="trackingToggle"><span>Rastreamento</span><small>Pessoa/rosto para o Reframe</small></label>
+          <input id="trackingToggle" type="checkbox" role="switch" disabled>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="pairingDialog" class="modal">
+    <div class="modal-head"><div><span class="eyebrow">CONEXÃO SEGURA</span><h2>Parear o iPhone</h2></div><button class="icon-button" data-close="pairingDialog" aria-label="Fechar">×</button></div>
+    <div class="pair-grid">
+      <div class="qr-shell"><img id="qrImage" alt="QR Code de pareamento"><div id="qrPlaceholder" class="qr-placeholder">Gerando QR…</div></div>
+      <div class="pair-steps">
+        <label for="interfaceSelect">Rede visível pelo iPhone</label>
+        <select id="interfaceSelect"></select>
+        <ol><li>Abra <b>Câmera → M7</b> no iPhone.</li><li>Toque em <b>Ler QR do PC</b>.</li><li>Aponte a câmera para este código.</li></ol>
+        <div class="expiry"><span id="expiryBar"></span></div>
+        <p id="pairingStatus">Escolha a rede e gere um código.</p>
+        <button id="generateQRButton" class="button primary full">Gerar novo QR</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="authDialog" class="modal small">
+    <div class="modal-head"><div><span class="eyebrow">IPHONE RECONHECIDO</span><h2>Entrar pelo OpenSSH</h2></div></div>
+    <p id="authDevice" class="modal-copy"></p>
+    <label for="sshPassword">Senha do usuário <b>mobile</b></label>
+    <input id="sshPassword" type="password" autocomplete="off" placeholder="Senha SSH">
+    <div id="trustPanel" class="trust-panel" hidden><span>Chave do iPhone</span><code id="fingerprint"></code><small>Compare se você já conhece esta chave. Ela será lembrada neste computador.</small></div>
+    <p id="authError" class="error-text"></p>
+    <div class="modal-actions"><button id="authCancel" class="button ghost">Cancelar</button><button id="authConnect" class="button primary">Conectar</button></div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

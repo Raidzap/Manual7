@@ -19,6 +19,11 @@ typedef void (^M7RemoteRequestHandler)(NSDictionary *request, M7RemoteResponse r
 - (instancetype)initWithUnixSocketPath:(NSString *)path
                                    pin:(NSString *)pin
                                handler:(M7RemoteRequestHandler)handler;
+- (instancetype)initWithBridgePort:(uint16_t)bridgePort
+                publicUnixSocketPath:(NSString *)path
+                               magic:(NSString *)magic
+                                 pin:(NSString *)pin
+                             handler:(M7RemoteRequestHandler)handler;
 - (instancetype)init NS_UNAVAILABLE;
 - (BOOL)start:(NSError **)error;
 - (void)stop;

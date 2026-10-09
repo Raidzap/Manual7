@@ -118,8 +118,8 @@ class RemoteCLITests(unittest.TestCase):
         argv = call.call_args.args[0]
         forwards = [argv[index + 1] for index, value in enumerate(argv) if value == "-L"]
         self.assertEqual(forwards, [
-            "127.0.0.1:17837:/var/tmp/Manual7-api.sock",
-            "127.0.0.1:17838:/var/tmp/Manual7-webcam.sock"])
+            "127.0.0.1:17837:127.0.0.1:27839",
+            "127.0.0.1:17838:127.0.0.1:27840"])
         self.assertIn("StrictHostKeyChecking=accept-new", argv)
 
     def test_webcam_start_sets_format_then_starts(self):

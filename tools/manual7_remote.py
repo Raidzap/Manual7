@@ -21,6 +21,8 @@ DEFAULT_URL = "http://127.0.0.1:17837"
 DEFAULT_REMOTE_SOCKET = "/var/tmp/Manual7-api.sock"
 DEFAULT_WEBCAM_URL = "http://127.0.0.1:17838/v1/webcam.mjpg"
 DEFAULT_WEBCAM_SOCKET = "/var/tmp/Manual7-webcam.sock"
+DEFAULT_REMOTE_PORT = 27839
+DEFAULT_WEBCAM_REMOTE_PORT = 27840
 
 
 class RemoteError(RuntimeError):
@@ -173,11 +175,13 @@ def build_parser() -> argparse.ArgumentParser:
     tunnel.add_argument("--local-port", type=int, default=17837)
     tunnel.add_argument("--remote-socket", default=DEFAULT_REMOTE_SOCKET,
                         help="Socket Unix da API no iPhone.")
-    tunnel.add_argument("--remote-port", type=int,
-                        help="Usa uma porta TCP remota de uma versão M7 anterior.")
+    tunnel.add_argument("--remote-port", type=int, default=DEFAULT_REMOTE_PORT,
+                        help="Porta TCP loopback da API no bridge (padrão: 27839).")
     tunnel.add_argument("--webcam-local-port", type=int, default=17838)
     tunnel.add_argument("--webcam-remote-socket", default=DEFAULT_WEBCAM_SOCKET,
                         help="Socket Unix MJPEG no iPhone.")
+    tunnel.add_argument("--webcam-remote-port", type=int, default=DEFAULT_WEBCAM_REMOTE_PORT,
+                        help="Porta TCP loopback da webcam no bridge (padrão: 27840).")
     return parser
 
 
@@ -188,15 +192,17 @@ def main(argv: list[str] | None = None) -> int:
             ssh_port = choose_ssh_port(args.host, args.ssh_port)
             forwarding = tunnel_forwarding(args.local_port, args.remote_socket, args.remote_port)
             webcam_forwarding = tunnel_forwarding(args.webcam_local_port,
-                                                   args.webcam_remote_socket)
+                                                   args.webcam_remote_socket,
+                                                   args.webcam_remote_port)
         except (OSError, ValueError) as exc:
             print(f"Manual7: {exc}", file=sys.stderr)
             return 1
         target = f"{args.user}@{args.host}"
         destination = f"127.0.0.1:{args.remote_port}" if args.remote_port else args.remote_socket
         print(f"API http://127.0.0.1:{args.local_port} → {target}:{destination}", file=sys.stderr)
+        webcam_destination = f"127.0.0.1:{args.webcam_remote_port}"
         print(f"Webcam http://127.0.0.1:{args.webcam_local_port}/v1/webcam.mjpg "
-              f"→ {target}:{args.webcam_remote_socket} via SSH {ssh_port}", file=sys.stderr)
+              f"→ {target}:{webcam_destination} via SSH {ssh_port}", file=sys.stderr)
         return subprocess.call(["ssh", "-p", str(ssh_port), "-N",
                                 "-L", forwarding, "-L", webcam_forwarding,
                                 "-o", "ExitOnForwardFailure=yes",

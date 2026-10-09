@@ -22,6 +22,8 @@ from typing import Any
 
 API_SOCKET = "/var/tmp/Manual7-api.sock"
 WEBCAM_SOCKET = "/var/tmp/Manual7-webcam.sock"
+API_BRIDGE_PORT = 27839
+WEBCAM_BRIDGE_PORT = 27840
 PAIR_PATH = "/v1/pair"
 MAX_BODY = 16 * 1024
 
@@ -123,10 +125,15 @@ def validate_result(value: Any) -> dict[str, Any]:
         raise PairingError("o M7 não encontrou o servidor OpenSSH ativo nas portas 22/2222")
     api_socket = validate_socket_path(value.get("apiSocket"), "api")
     webcam_socket = validate_socket_path(value.get("webcamSocket"), "webcam")
+    api_bridge_port = value.get("apiBridgePort")
+    webcam_bridge_port = value.get("webcamBridgePort")
+    if api_bridge_port != API_BRIDGE_PORT or webcam_bridge_port != WEBCAM_BRIDGE_PORT:
+        raise PairingError("as portas TCP do bridge não correspondem ao Manual7 0.7.4")
     if PurePosixPath(api_socket).parent != PurePosixPath(webcam_socket).parent:
         raise PairingError("os sockets da API e webcam precisam usar o mesmo diretório")
     return {**value, "preferredSSHPort": preferred, "availableSSHPorts": clean_ports,
-            "apiSocket": api_socket, "webcamSocket": webcam_socket}
+            "apiSocket": api_socket, "webcamSocket": webcam_socket,
+            "apiBridgePort": api_bridge_port, "webcamBridgePort": webcam_bridge_port}
 
 
 def handler_for(state: PairingState) -> type[http.server.BaseHTTPRequestHandler]:
@@ -215,8 +222,8 @@ def ssh_command(peer_ip: str, result: dict[str, Any], args: argparse.Namespace) 
         "ssh", "-N", "-p", str(port),
         "-o", "ExitOnForwardFailure=yes",
         "-o", "StrictHostKeyChecking=accept-new",
-        "-L", f"127.0.0.1:{args.local_port}:{result['apiSocket']}",
-        "-L", f"127.0.0.1:{args.webcam_local_port}:{result['webcamSocket']}",
+        "-L", f"127.0.0.1:{args.local_port}:127.0.0.1:{result['apiBridgePort']}",
+        "-L", f"127.0.0.1:{args.webcam_local_port}:127.0.0.1:{result['webcamBridgePort']}",
         f"{args.user}@{peer_ip}",
     ]
 

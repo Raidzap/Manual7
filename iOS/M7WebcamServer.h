@@ -7,6 +7,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 @property (nonatomic, readonly) NSUInteger clientCount;
 - (instancetype)initWithUnixSocketPath:(NSString *)path pin:(NSString *)pin;
+- (instancetype)initWithBridgePort:(uint16_t)bridgePort
+                publicUnixSocketPath:(NSString *)path
+                               magic:(NSString *)magic
+                                 pin:(NSString *)pin;
 - (instancetype)init NS_UNAVAILABLE;
 - (BOOL)start:(NSError **)error;
 - (void)stop;

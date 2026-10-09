@@ -1,5 +1,9 @@
 #import "M7WebcamServer.h"
+#import <arpa/inet.h>
 #import <errno.h>
+#import <fcntl.h>
+#import <netinet/in.h>
+#import <poll.h>
 #import <string.h>
 #import <sys/socket.h>
 #import <sys/stat.h>
@@ -7,6 +11,27 @@
 #import <unistd.h>
 
 static const void *M7WebcamSendQueueKey = &M7WebcamSendQueueKey;
+static const int M7WebcamBridgeConnectTimeoutMilliseconds = 250;
+static const char M7WebcamBridgeActivation[] = "M7-BRIDGE-CLIENT-1\n";
+
+static int M7WebcamConnectLoopback(int socketFD, const struct sockaddr_in *address) {
+    int flags = fcntl(socketFD, F_GETFL, 0);
+    if (flags < 0 || fcntl(socketFD, F_SETFL, flags | O_NONBLOCK) != 0) return -1;
+    int result = connect(socketFD, (const struct sockaddr *)address, sizeof(*address));
+    if (result != 0 && errno != EINPROGRESS) return -1;
+    if (result != 0) {
+        struct pollfd descriptor = {.fd = socketFD, .events = POLLOUT};
+        do result = poll(&descriptor, 1, M7WebcamBridgeConnectTimeoutMilliseconds);
+        while (result < 0 && errno == EINTR);
+        if (result <= 0) { errno = result == 0 ? ETIMEDOUT : errno; return -1; }
+        int code = 0; socklen_t length = sizeof(code);
+        if (getsockopt(socketFD, SOL_SOCKET, SO_ERROR, &code, &length) != 0 || code != 0) {
+            if (code) errno = code;
+            return -1;
+        }
+    }
+    return fcntl(socketFD, F_SETFL, flags);
+}
 
 static NSError *M7WebcamSocketError(NSInteger code, NSString *operation, NSString *message) {
     NSString *reason = code > 0 ? [NSString stringWithUTF8String:strerror((int)code)] : @"";
@@ -48,6 +73,11 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
 @property (nonatomic) NSUInteger lastHeight;
 @property (nonatomic) NSTimeInterval startedAt;
 @property (nonatomic) NSTimeInterval lastFrameAt;
+@property (nonatomic) uint16_t bridgePort;
+@property (nonatomic) NSData *bridgeMagic;
+@property (nonatomic) NSMutableSet<NSNumber *> *pendingBridgeSockets;
+@property (nonatomic) BOOL ownsSocketPath;
+@property (nonatomic) NSString *transport;
 @end
 
 @implementation M7WebcamServer
@@ -60,13 +90,115 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
         dispatch_queue_set_specific(_sendQueue, M7WebcamSendQueueKey,
             (void *)M7WebcamSendQueueKey, NULL);
         _listeningSocket = -1; _clients = [NSMutableSet new];
+        _pendingBridgeSockets = [NSMutableSet new]; _transport = @"multipart-mjpeg-unix";
     }
     return self;
+}
+
+- (instancetype)initWithBridgePort:(uint16_t)bridgePort publicUnixSocketPath:(NSString *)path
+    magic:(NSString *)magic pin:(NSString *)pin {
+    if ((self = [super init])) {
+        _path = [path copy]; _pin = [pin copy]; _bridgePort = bridgePort;
+        _bridgeMagic = [magic dataUsingEncoding:NSUTF8StringEncoding];
+        _transport = @"multipart-mjpeg-launchd-bridge-unix";
+        _acceptQueue = dispatch_queue_create("dev.manual7.webcam.bridge", DISPATCH_QUEUE_SERIAL);
+        _sendQueue = dispatch_queue_create("dev.manual7.webcam.send", DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_set_specific(_sendQueue, M7WebcamSendQueueKey,
+            (void *)M7WebcamSendQueueKey, NULL);
+        _listeningSocket = -1; _clients = [NSMutableSet new];
+        _pendingBridgeSockets = [NSMutableSet new];
+    }
+    return self;
+}
+
+- (int)newBridgeSocket:(NSError **)error {
+    int client = socket(AF_INET, SOCK_STREAM, 0);
+    if (client < 0) {
+        if (error) *error = M7WebcamSocketError(errno, @"socket(AF_INET bridge)",
+            @"Não foi possível criar a conexão da webcam com o serviço auxiliar.");
+        return -1;
+    }
+#ifdef SO_NOSIGPIPE
+    int enabled = 1;
+    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+#endif
+    struct sockaddr_in address = {0};
+#if defined(__APPLE__)
+    address.sin_len = sizeof(address);
+#endif
+    address.sin_family = AF_INET;
+    address.sin_port = htons(self.bridgePort);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (M7WebcamConnectLoopback(client, &address) != 0) {
+        NSInteger code = errno; close(client);
+        if (error) *error = M7WebcamSocketError(code, @"connect(launchd bridge)",
+            @"O serviço auxiliar da webcam não respondeu.");
+        return -1;
+    }
+    if (!M7WebcamSendAll(client, self.bridgeMagic)) {
+        NSInteger code = errno ?: EPIPE; close(client);
+        if (error) *error = M7WebcamSocketError(code, @"authenticate(launchd bridge)",
+            @"O serviço auxiliar recusou a conexão da webcam.");
+        return -1;
+    }
+    return client;
+}
+
+- (void)runBridgeWorker:(int)initialSocket generation:(NSUInteger)generation {
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(self.acceptQueue, ^{
+        int client = initialSocket;
+        while (YES) {
+            M7WebcamServer *owner = weakSelf;
+            if (!owner) { if (client >= 0) close(client); break; }
+            @synchronized (owner) {
+                if (!owner.running || owner.generation != generation) {
+                    if (client >= 0) close(client);
+                    break;
+                }
+            }
+            if (client < 0) {
+                client = [owner newBridgeSocket:nil];
+                if (client < 0) { usleep(1000000); continue; }
+            }
+            @synchronized (owner) { [owner.pendingBridgeSockets addObject:@(client)]; }
+            uint8_t activation[sizeof(M7WebcamBridgeActivation) - 1] = {0};
+            NSUInteger received = 0;
+            while (received < sizeof(activation)) {
+                ssize_t count = recv(client, activation + received, sizeof(activation) - received, 0);
+                if (count < 0 && errno == EINTR) continue;
+                if (count <= 0) break;
+                received += (NSUInteger)count;
+            }
+            if (received == sizeof(activation) &&
+                memcmp(activation, M7WebcamBridgeActivation, sizeof(activation)) == 0)
+                [owner handleClient:client generation:generation];
+            else close(client);
+            @synchronized (owner) { [owner.pendingBridgeSockets removeObject:@(client)]; }
+            client = -1;
+        }
+    });
+}
+
+- (BOOL)startBridge:(NSError **)error {
+    if (!self.bridgeMagic.length || !self.bridgePort) {
+        if (error) *error = M7WebcamSocketError(EINVAL, @"bridge configuration",
+            @"A configuração do serviço auxiliar da webcam é inválida.");
+        return NO;
+    }
+    int first = [self newBridgeSocket:error];
+    if (first < 0) return NO;
+    self.running = YES;
+    self.startedAt = NSDate.date.timeIntervalSince1970;
+    NSUInteger generation = ++self.generation;
+    [self runBridgeWorker:first generation:generation];
+    return YES;
 }
 
 - (BOOL)start:(NSError **)error {
     @synchronized (self) {
         if (self.running) return YES;
+        if (self.bridgePort) return [self startBridge:error];
         const char *path = self.path.fileSystemRepresentation;
         if (!path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
             if (error) *error = M7WebcamSocketError(ENAMETOOLONG, @"path",
@@ -98,7 +230,10 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
             return NO;
         }
         struct stat info = {0};
-        if (lstat(path, &info) == 0) { self.socketDevice = info.st_dev; self.socketInode = info.st_ino; }
+        if (lstat(path, &info) == 0) {
+            self.socketDevice = info.st_dev; self.socketInode = info.st_ino;
+            self.ownsSocketPath = YES;
+        }
         self.listeningSocket = server; self.running = YES; self.startedAt = NSDate.date.timeIntervalSince1970;
         NSUInteger generation = ++self.generation;
         [self beginAccepting:server generation:generation];
@@ -206,8 +341,10 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
 - (void)stop {
     int server = -1;
     @synchronized (self) {
-        if (!self.running && self.listeningSocket < 0) return;
+        if (!self.running && self.listeningSocket < 0 && self.pendingBridgeSockets.count == 0) return;
         self.running = NO; ++self.generation; server = self.listeningSocket; self.listeningSocket = -1;
+        for (NSNumber *number in self.pendingBridgeSockets) shutdown(number.intValue, SHUT_RDWR);
+        [self.pendingBridgeSockets removeAllObjects];
     }
     if (server >= 0) { shutdown(server, SHUT_RDWR); close(server); }
     void (^closeClients)(void) = ^{
@@ -218,15 +355,16 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
     if (dispatch_get_specific(M7WebcamSendQueueKey)) closeClients();
     else dispatch_sync(self.sendQueue, closeClients);
     struct stat info = {0};
-    if (lstat(self.path.fileSystemRepresentation, &info) == 0 &&
+    if (self.ownsSocketPath && lstat(self.path.fileSystemRepresentation, &info) == 0 &&
         info.st_dev == self.socketDevice && info.st_ino == self.socketInode)
         unlink(self.path.fileSystemRepresentation);
+    self.ownsSocketPath = NO;
 }
 
 - (NSDictionary *)snapshot {
     @synchronized (self) {
         struct stat info = {0}; BOOL exists = lstat(self.path.fileSystemRepresentation, &info) == 0;
-        return @{ @"running":@(self.running), @"transport":@"multipart-mjpeg-unix",
+        return @{ @"running":@(self.running), @"transport":self.transport ?: @"",
             @"unixSocketPath":self.path, @"unixSocketExists":@(exists),
             @"unixSocketPermissions":exists ? [NSString stringWithFormat:@"%04o",
                 (unsigned int)(info.st_mode & 0777)] : @"",
@@ -235,7 +373,9 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
             @"framesPublished":@(self.framesPublished), @"bytesPublished":@(self.bytesPublished),
             @"lastWidth":@(self.lastWidth), @"lastHeight":@(self.lastHeight),
             @"targetFPS":@10, @"jpegQuality":@.72, @"startedAt":@(self.startedAt),
-            @"lastFrameAt":@(self.lastFrameAt), @"pinRequired":@YES };
+            @"lastFrameAt":@(self.lastFrameAt), @"pinRequired":@YES,
+            @"bridgePort":@(self.bridgePort),
+            @"pendingBridgeWorkers":@(self.pendingBridgeSockets.count) };
     }
 }
 

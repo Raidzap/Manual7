@@ -11,3 +11,10 @@ Manual7_CFLAGS = -fobjc-arc -Wall -Wextra
 Manual7_FRAMEWORKS = UIKit AVFoundation AudioToolbox CoreMedia CoreVideo CoreGraphics CoreImage QuartzCore Photos ImageIO Vision
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+TOOL_NAME = manual7bridge
+manual7bridge_FILES = Bridge/manual7bridge.c
+manual7bridge_CFLAGS = -std=c11 -Wall -Wextra -Werror -fmodules-cache-path=$(THEOS_PROJECT_DIR)/.theos/module-cache
+manual7bridge_INSTALL_PATH = /usr/libexec
+
+include $(THEOS_MAKE_PATH)/tool.mk

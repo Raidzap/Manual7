@@ -1,6 +1,6 @@
 # Pareamento por QR no Linux
 
-O Manual7 0.7.2 elimina a digitação do IP do iPhone, do PIN e dos caminhos dos sockets. O script Linux abre um callback temporário na rede local, cria um QR de uso único e aguarda o M7. No iPhone, **Conexão → Ler QR do PC** usa os frames do visor e o Vision para reconhecer o código. O M7 envia ao callback o IP de origem do iPhone, o PIN atual, a porta OpenSSH ativa e os endpoints Unix que conseguiu criar; em seguida o script abre os túneis da API e da webcam.
+O Manual7 0.7.4 elimina a digitação do IP do iPhone, do PIN e das portas do bridge. O script Linux abre um callback temporário na rede local, cria um QR de uso único e aguarda o M7. No iPhone, **Conexão → Ler QR do PC** usa os frames do visor e o Vision para reconhecer o código. O M7 envia ao callback o IP de origem do iPhone, o PIN atual, a porta OpenSSH ativa e as portas loopback do bridge; em seguida o script abre os túneis da API e da webcam.
 
 O QR vence após 90 segundos por padrão. O token é aleatório, aceito uma vez, enviado ao `qrencode` pela entrada padrão e removido da memória de estado após o retorno. PIN e token não entram nos relatórios do M7. O callback aceita somente a rota de pareamento, limita o corpo a 16 KiB e vincula-se ao IPv4 privado escolhido no notebook.
 

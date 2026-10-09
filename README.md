@@ -1,20 +1,20 @@
-# Manual7 — 0.7.2 experimental
+# Manual7 — 0.7.4 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.1 corrige a configuração que ainda estava implícita: valida Bayer contra o contêiner DNG, solicita `AVFileTypeDNG`, desliga a estabilização, prepara os buffers RAW antecipadamente e aguarda a estabilização do sensor. A 0.7.2 corrige a API remota após o teste físico confirmar que o SSH funcionava, mas o sandbox da Câmera não criava `/var/tmp/Manual7-api.sock`. **RAW 0.7.1, vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.1 corrige a configuração que ainda estava implícita. A 0.7.4 move a API remota para um bridge `launchd` fora do sandbox da Câmera e inicia toda a camada remota em segundo plano, com timeout de conexão de 250 ms, sem atrasar o visor e os controles. **RAW, vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física completa no iPhone.**
 
 ## OpenSSH e controle remoto
 
 O pacote agora declara `openssh-server` como dependência. Durante a instalação pelo Sileo ou `apt`, o pacote oficial do Procursus instala o `sshd`, gera as chaves exclusivas do aparelho e registra `com.openssh.sshd` no `launchd`. O M7 não inclui senha, chave privada ou cópia própria dos binários do OpenSSH.
 
-O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 2222. A linha **Remoto** mostra a porta SSH ativa, `API Unix` e o PIN. O mesmo estado aparece em `state.openSSH` e `openSSH` no diagnóstico. O servidor tenta primeiro o diretório temporário gravável do processo Câmera e conserva `/var/tmp` como fallback; o QR entrega ao cliente o caminho que realmente foi criado. O socket usa permissão `0600`, é encaminhado para `127.0.0.1:17837` e é removido quando a API para. O PIN de seis dígitos é renovado quando um novo painel M7 é aberto e é exigido em todas as rotas de estado, diagnóstico e comando.
+O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 2222. A linha **Remoto** mostra a porta SSH ativa, `API bridge` e o PIN. O mesmo estado aparece em `state.openSSH` e `openSSH` no diagnóstico. O LaunchDaemon `dev.manual7.bridge` publica a API e a webcam somente no loopback do iPhone, nas portas 27839 e 27840, e também mantém os sockets Unix `0600` para diagnóstico. O processo Câmera faz apenas conexões de saída para o bridge, contornando a proibição de `bind` imposta pelo sandbox. O PIN de seis dígitos é renovado quando um novo painel M7 é aberto e é exigido em todas as rotas de estado, diagnóstico e comando.
 
-## Correção da API remota na 0.7.2
+## Inicialização e bridge remoto na 0.7.4
 
-O teste físico confirmou que o notebook alcançava as portas 22 e 2222 e autenticava no OpenSSH, enquanto `/var/tmp/Manual7-api.sock` e `/var/tmp/Manual7-webcam.sock` não existiam. A linha `SSH 22 · API indisponível` isolou a falha no `bind(AF_UNIX)` executado dentro do sandbox da Câmera.
+O teste físico confirmou que o notebook alcançava a porta 22 e autenticava no OpenSSH, enquanto o sandbox da Câmera impedia criar os sockets públicos. As tentativas anteriores também eram executadas de forma síncrona em `viewDidLoad`, atrasando toda a interface quando a API não respondia.
 
-A 0.7.2 tenta `NSTemporaryDirectory()` antes dos caminhos globais. Cada tentativa registra caminho, resultado, operação, domínio, código POSIX, diretório temporário e home em `remoteBindAttempts` e `remoteEvents`. O pareamento envia os caminhos efetivos da API e da webcam; o cliente valida que eles pertencem ao temporário do contêiner da Câmera ou aos fallbacks conhecidos e usa esses valores diretamente nos dois `ssh -L`.
+A 0.7.4 instala um processo auxiliar mínimo pelo `launchd`. Ele recebe workers autenticados da Câmera e publica endpoints TCP somente em `127.0.0.1`, que o OpenSSH encaminha sem depender do suporte a Unix stream forwarding do iOS. Workers encerrados são removidos antes de atender o próximo cliente, e um handshake confirma cada worker antes de entregar HTTP. O painel agenda a API em uma fila própria; a câmera e os controles iniciam imediatamente. Cada conexão inicial tem limite de 250 ms, não há mais sequência de fallbacks bloqueantes e as reconexões usam espera de um segundo. `remoteStartup`, `remoteBindAttempts` e `remoteEvents` registram fila, motivo, duração, geração, timeout e erro.
 
 O cliente `tools/manual7_remote.py`, feito apenas com a biblioteca padrão do Python, consulta estado, copia diagnóstico, fotografa, inicia/para vídeo e webcam, repete salvamentos pendentes e altera modo, lente, exposição, ISO, shutter, EV, foco, RAW, tamanho JPEG, Reframe, tracking e peaking. Cada requisição aceita, recusada ou malformada é contabilizada; comandos e resultados aparecem em `remoteEvents`, e comandos feitos durante vídeo também entram em `lastVideo.events`. O PIN não é registrado.
 
@@ -143,18 +143,18 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [pré-release v0.7.2](https://github.com/Raidzap/Manual7/releases/tag/v0.7.2).
+Baixe o pacote `.deb` e seu checksum na [release v0.7.4](https://github.com/Raidzap/Manual7/releases/tag/v0.7.4).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
 2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes do bootstrap.
-3. Transfira `dev.manual7.camera_0.7.2_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
+3. Transfira `dev.manual7.camera_0.7.4_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
 cd /var/mobile/Downloads
-sudo apt install ./dev.manual7.camera_0.7.2_iphoneos-arm64.deb
+sudo apt install ./dev.manual7.camera_0.7.4_iphoneos-arm64.deb
 ```
 
 Use `apt` ou Sileo nesta versão: `dpkg -i` sozinho não baixa uma dependência ausente. O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. As dependências `mobilesubstrate` e `openssh-server` são fornecidas pelo ambiente rootless/Procursus; o script do OpenSSH carrega o serviço no `launchd`.
@@ -193,7 +193,7 @@ Quando o armazenamento funciona, `ultima-captura.json` preserva as etapas após 
 11. Durante outra gravação, altere ISO/shutter, foco, EV e travas. Confirme efeito visual e eventos `controlChange`; confira `videoFrames`, `audioSamples`, `droppedVideoFrames` e backpressure.
 12. Repita 16:9, 9:16 e Ambos em cada lente. Interrompa uma gravação indo ao segundo plano e confirme finalização ou erro explícito. Se o Fotos falhar, use **Tentar salvar vídeos pendentes** sem gravar novamente.
 13. Ative Rastrear, mantenha uma pessoa no quadro e mova-a lentamente da esquerda para a direita e de cima para baixo. Confirme círculo verde durante a detecção, guias móveis e movimento suave nos dois vídeos. Saia do quadro por mais de um segundo e confirme retorno gradual ao centro. Repita com duas pessoas e com apenas o rosto visível. Copie o diagnóstico e confira `tracking.totalPoints`, `detections`, `misses`, `points` e `dynamicReframe`.
-14. Confirme que a linha Remoto mostra `SSH 22 · API Unix` ou `SSH 2222 · API Unix`. No Linux, abra o túnel SSH, configure `MANUAL7_PIN` e execute `ping` e `state`. Verifique `state.openSSH` e `state.remoteServer.transport: unix`, altere cada controle remoto, fotografe JPEG, inicie/pare um vídeo e obtenha `diagnostic`. Confirme no iPhone que a interface acompanha as alterações e confira `openSSH`, `remoteServer`, `remoteEvents` e eventos remotos em `lastVideo`. Teste PIN incorreto, segundo plano e fechamento do painel; a API deve recusar conexões nesses estados.
+14. Confirme que a linha Remoto mostra `SSH 22 · API bridge` ou `SSH 2222 · API bridge`. No Linux, abra o túnel SSH, configure `MANUAL7_PIN` e execute `ping` e `state`. Verifique `state.openSSH` e `state.remoteServer.transport: launchd-bridge-unix`, altere cada controle remoto, fotografe JPEG, inicie/pare um vídeo e obtenha `diagnostic`. Confirme no iPhone que a interface acompanha as alterações e confira `remoteStartup`, `openSSH`, `remoteServer` e `remoteEvents`. Teste PIN incorreto, segundo plano e fechamento do painel; a API deve recusar conexões nesses estados.
 15. Execute `manual7_pair.py`, leia o QR pelo botão **Ler QR do PC** e confirme que o script identifica o IP/porta do iPhone e abre os dois túneis. Repita com token inválido, timeout, cancelamento, firewall bloqueando o callback e segundo plano. Verifique `pairing`, ausência de PIN/token no relatório e os eventos `pairingScanStarted`, `pairingCodeRecognized` e `pairingAccepted` ou erro explícito.
 16. No Linux, crie `/dev/video10` com `v4l2loopback`, execute `webcam-feed` em 16:9 e selecione **Manual7 Webcam** em um consumidor V4L2. Altere ISO, shutter, foco, EV e lente durante o uso; confirme o efeito sem reiniciar. Repita em 9:16, com rastreamento ligado, PIN incorreto e segundo plano. No diagnóstico, verifique `webcam.server.clientCount`, `framesPublished`, `bytesPublished`, `busyDrops`, dimensões, permissões `0600` e ausência de erros.
 
@@ -236,7 +236,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 `bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill central e móvel e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. `bash tests/run_subject_tracker_native.sh` executa o caminho sem pessoa em um pixel buffer real, conferindo rastros temporizados, estado, reset e JSON. Esses testes exigem macOS e não simulam câmera, microfone, PhotoKit, temperatura, uma pessoa real ou capacidade de codificação do iPhone.
 
-A suíte da 0.7.2 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar os transportes TCP e Unix da API, o socket MJPEG, caminhos temporários dinâmicos dentro do limite de 104 bytes do Darwin, o parser/retorno de pareamento, o caminho de análise Vision, tokens de uso único, permissões `0600`, remoção dos sockets, autenticação por PIN, multipart, geometria/centralização dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do pacote/serviço OpenSSH, túnel duplo e comandos dos clientes Python. O runner macOS hospedado não reconheceu o QR sintético porque o serviço `AppleM2ScalerCSCDriver` não está disponível; o reconhecimento positivo continua como validação obrigatória no iPhone.
+A suíte da 0.7.4 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar o LaunchDaemon, autenticação dos workers, descarte de worker encerrado, endpoint TCP loopback, transportes TCP e Unix da API, MJPEG, parser/retorno de pareamento, Vision, tokens de uso único, permissões `0600`, autenticação por PIN, multipart, geometria dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do OpenSSH, túnel duplo e comandos dos clientes Python. O reconhecimento positivo do QR continua como validação obrigatória no iPhone.
 
 A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37860682640).
 

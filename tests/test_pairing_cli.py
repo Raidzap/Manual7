@@ -21,12 +21,14 @@ SPEC.loader.exec_module(PAIR)
 class PairingCLITests(unittest.TestCase):
     def payload(self):
         return {
-            "version": "0.7.2",
+            "version": "0.7.4",
             "pin": "123456",
             "preferredSSHPort": 22,
             "availableSSHPorts": [22, 2222],
             "apiSocket": PAIR.API_SOCKET,
             "webcamSocket": PAIR.WEBCAM_SOCKET,
+            "apiBridgePort": PAIR.API_BRIDGE_PORT,
+            "webcamBridgePort": PAIR.WEBCAM_BRIDGE_PORT,
         }
 
     def test_uri_round_trip_has_custom_scheme_and_callback(self):
@@ -109,8 +111,8 @@ class PairingCLITests(unittest.TestCase):
         payload["webcamSocket"] = directory + "/m7w"
         command = PAIR.ssh_command("192.168.1.50", payload, args)
         self.assertEqual(command[0], "ssh")
-        self.assertIn("127.0.0.1:17837:" + payload["apiSocket"], command)
-        self.assertIn("127.0.0.1:17838:" + payload["webcamSocket"], command)
+        self.assertIn("127.0.0.1:17837:127.0.0.1:27839", command)
+        self.assertIn("127.0.0.1:17838:127.0.0.1:27840", command)
         self.assertIn("StrictHostKeyChecking=accept-new", command)
         self.assertEqual(command[-1], "mobile@192.168.1.50")
 

@@ -1,28 +1,21 @@
-Manual7 0.7.2 — registro de build
-Data UTC: 2026-10-08T23:38:49Z
+Manual7 0.7.4 — registro de build
+Data local: 2026-10-09
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
-Testes Linux: 32 aprovados, incluindo Core/C, contratos de callbacks com SDK iOS, clientes Python e contrato do pacote.
-Teste RAW nativo: seleção pela interseção disponível/Bayer/DNG, FourCC rgg4 e snapshot JSON adicionado ao CI macOS.
-CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/37860682640
-Commit da implementação testada: d4e92778448be9ef5a12109827562566e249b6f0
+Testes Linux: 35 aprovados; 1 conjunto exclusivo de macOS ignorado no Linux.
+Inicialização: API, verificação OpenSSH e reconexões fora da main thread; connect limitado a 250 ms; nenhum fallback síncrono no viewDidLoad.
+Bridge: LaunchDaemon como mobile, workers autenticados, handshake de ativação, descarte de worker encerrado, sockets Unix 0600 de diagnóstico e endpoints TCP somente em 127.0.0.1:27839/27840.
+OpenSSH físico: direct-streamlocal recusou o socket Unix; o encaminhamento TCP para os listeners loopback foi adotado e confirmado pelo túnel do notebook.
+Instalação física: pacote instalado; postinst iniciou system/dev.manual7.bridge automaticamente e launchctl confirmou o processo ativo.
 RAW físico anterior: RAW e RAW+JPEG falharam com AVFoundation -11800 / OSStatus -12780 antes de produzir pixel buffer ou bytes.
-Correção 0.7.1: valida AVFileTypeDNG e supportedRawPhotoPixelFormatTypesForFileType, solicita DNG explícito, desliga estabilização automática e usa prioridade Speed.
-Preparação RAW: setPreparedPhotoSettingsArray antecipa buffers RAW e RAW+JPEG após cada troca de lente/topologia; o disparo espera preparação e estabilização do sensor por até três segundos.
-Diagnóstico RAW: inventário de contêineres e formatos, FourCC, classificação Bayer, interseção DNG, formato selecionado, preparação, propriedades efetivas e cadeia NSError completa.
-Pareamento QR: script Linux com callback temporário, IPv4 RFC1918/link-local, token aleatório de uso único, validade configurável, limite de 16 KiB, Content-Type JSON e derivação do IP pelo peer da conexão.
-Leitor M7: botão Ler QR do PC, Vision limitado a 3 Hz, timeout de 30 s, validação de URI/esquema/endereço/porta/token, espera de conectividade e cancelamento no segundo plano, interrupção, fechamento ou ação do usuário.
-Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe o payload pela entrada padrão. O PIN é entregue somente no corpo autenticado do callback e exibido no terminal para os comandos locais.
-Controle remoto: HTTP/JSON em socket Unix modo 0600, priorizando NSTemporaryDirectory e mantendo /var/tmp e /tmp como fallbacks; PIN aleatório por painel, timeout, limite de corpo, contadores e remoção no segundo plano/fechamento.
-Diagnóstico remoto: cada bind registra caminho, diretório, sucesso, operação e código POSIX em remoteBindAttempts e remoteEvents.
-Pareamento dinâmico: o callback envia os caminhos efetivos; o cliente restringe-os ao temporário do contêiner ou fallbacks conhecidos e usa os valores nos dois encaminhamentos SSH.
-Limite Unix: nomes m7a/m7w preservam o caminho completo abaixo dos 104 bytes de sockaddr_un no contêiner com UUID.
-OpenSSH: dependência oficial openssh-server do Procursus, detecção de /var/jb, plist, configuração, chaves e portas 22/2222; nenhum segredo incluído.
+RAW: valida AVFileTypeDNG, cruza supportedRawPhotoPixelFormatTypesForFileType, prepara buffers e registra a cadeia NSError completa.
+Pareamento QR: callback temporário autenticado informa PIN, porta SSH e portas loopback fixas do bridge; cliente valida os valores e abre os dois encaminhamentos TCP.
+Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe o payload pela entrada padrão.
 Vídeo/Reframe: master H.264 4:3 a 30 fps, AAC quando disponível, exportação 1920x1080, 1080x1920 ou ambas, central ou rastreada.
-Webcam: MJPEG autenticado no mesmo diretório selecionado para a API, modo 0600, 1280x720 ou 720x1280, alvo de 10 fps, recorte central ou rastreado e somente vídeo.
-Validação física 0.7.2: pendente; confirmar API Unix, parear pelo QR, executar ping/state e testar RAW DNG explícito.
-SHA-256 do .deb: 89668dab092dfced5e07532749fad7f0959389977ccbc248e798cfad5bfb4f3a
+Webcam: MJPEG autenticado via 127.0.0.1:27840, 1280x720 ou 720x1280, alvo de 10 fps, recorte central ou rastreado e somente vídeo.
+Validação pendente no aparelho: confirmar abertura visual imediata do painel, ping/state com o M7 aberto, QR, webcam, vídeo e RAW DNG explícito.
+SHA-256 do .deb: a618bfe3f56b34a78bd4b0490428db066a9a1717a596c7e14658b10fda81be71

@@ -1,7 +1,9 @@
 #import "M7RemoteServer.h"
 #import <arpa/inet.h>
 #import <errno.h>
+#import <fcntl.h>
 #import <netinet/in.h>
+#import <poll.h>
 #import <string.h>
 #import <sys/socket.h>
 #import <sys/stat.h>
@@ -10,6 +12,27 @@
 
 static const NSUInteger M7RemoteMaximumHeaderBytes = 16 * 1024;
 static const NSUInteger M7RemoteMaximumBodyBytes = 64 * 1024;
+static const int M7BridgeConnectTimeoutMilliseconds = 250;
+static const char M7BridgeActivation[] = "M7-BRIDGE-CLIENT-1\n";
+
+static int M7ConnectLoopback(int socketFD, const struct sockaddr_in *address) {
+    int flags = fcntl(socketFD, F_GETFL, 0);
+    if (flags < 0 || fcntl(socketFD, F_SETFL, flags | O_NONBLOCK) != 0) return -1;
+    int result = connect(socketFD, (const struct sockaddr *)address, sizeof(*address));
+    if (result != 0 && errno != EINPROGRESS) return -1;
+    if (result != 0) {
+        struct pollfd descriptor = {.fd = socketFD, .events = POLLOUT};
+        do result = poll(&descriptor, 1, M7BridgeConnectTimeoutMilliseconds);
+        while (result < 0 && errno == EINTR);
+        if (result <= 0) { errno = result == 0 ? ETIMEDOUT : errno; return -1; }
+        int code = 0; socklen_t length = sizeof(code);
+        if (getsockopt(socketFD, SOL_SOCKET, SO_ERROR, &code, &length) != 0 || code != 0) {
+            if (code) errno = code;
+            return -1;
+        }
+    }
+    return fcntl(socketFD, F_SETFL, flags);
+}
 
 static NSError *M7RemoteSocketError(NSInteger code, NSString *operation, NSString *message) {
     NSString *reason = code > 0 ? [NSString stringWithUTF8String:strerror((int)code)] : @"";
@@ -56,6 +79,9 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
 @property (nonatomic) dev_t unixSocketDevice;
 @property (nonatomic) ino_t unixSocketInode;
 @property (nonatomic) BOOL ownsUnixSocketPath;
+@property (nonatomic) uint16_t bridgePort;
+@property (nonatomic) NSData *bridgeMagic;
+@property (nonatomic) NSMutableSet<NSNumber *> *bridgeSockets;
 @end
 
 @implementation M7RemoteServer
@@ -69,6 +95,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         _handler = [handler copy];
         _acceptQueue = dispatch_queue_create("dev.manual7.remote.accept", DISPATCH_QUEUE_SERIAL);
         _listeningSocket = -1;
+        _bridgeSockets = [NSMutableSet new];
     }
     return self;
 }
@@ -82,8 +109,121 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         _handler = [handler copy];
         _acceptQueue = dispatch_queue_create("dev.manual7.remote.accept", DISPATCH_QUEUE_SERIAL);
         _listeningSocket = -1;
+        _bridgeSockets = [NSMutableSet new];
     }
     return self;
+}
+
+- (instancetype)initWithBridgePort:(uint16_t)bridgePort publicUnixSocketPath:(NSString *)path
+    magic:(NSString *)magic pin:(NSString *)pin handler:(M7RemoteRequestHandler)handler {
+    if ((self = [super init])) {
+        _bridgePort = bridgePort;
+        _requestedUnixSocketPath = [path copy];
+        _unixSocketPath = [path copy];
+        _bridgeMagic = [magic dataUsingEncoding:NSUTF8StringEncoding];
+        _transport = @"launchd-bridge-unix";
+        _pin = [pin copy];
+        _handler = [handler copy];
+        _acceptQueue = dispatch_queue_create("dev.manual7.remote.bridge", DISPATCH_QUEUE_SERIAL);
+        _listeningSocket = -1;
+        _bridgeSockets = [NSMutableSet new];
+    }
+    return self;
+}
+
+- (int)newBridgeSocket:(NSError **)error {
+    int client = socket(AF_INET, SOCK_STREAM, 0);
+    if (client < 0) {
+        if (error) *error = M7RemoteSocketError(errno, @"socket(AF_INET bridge)",
+            @"Não foi possível criar a conexão com o serviço auxiliar.");
+        return -1;
+    }
+#ifdef SO_NOSIGPIPE
+    int enabled = 1;
+    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+#endif
+    struct sockaddr_in address = {0};
+#if defined(__APPLE__)
+    address.sin_len = sizeof(address);
+#endif
+    address.sin_family = AF_INET;
+    address.sin_port = htons(self.bridgePort);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (M7ConnectLoopback(client, &address) != 0) {
+        NSInteger code = errno; close(client);
+        if (error) *error = M7RemoteSocketError(code, @"connect(launchd bridge)",
+            @"O serviço auxiliar do Manual7 não respondeu.");
+        return -1;
+    }
+    const uint8_t *bytes = self.bridgeMagic.bytes;
+    NSUInteger sent = 0;
+    while (sent < self.bridgeMagic.length) {
+        ssize_t count = send(client, bytes + sent, self.bridgeMagic.length - sent, 0);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) {
+            NSInteger code = errno ?: EPIPE; close(client);
+            if (error) *error = M7RemoteSocketError(code, @"authenticate(launchd bridge)",
+                @"O serviço auxiliar recusou a conexão da Câmera.");
+            return -1;
+        }
+        sent += (NSUInteger)count;
+    }
+    return client;
+}
+
+- (void)runBridgeWorker:(int)initialSocket generation:(NSUInteger)generation {
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        int client = initialSocket;
+        while (YES) {
+            M7RemoteServer *owner = weakSelf;
+            if (!owner) { if (client >= 0) close(client); break; }
+            @synchronized (owner) {
+                if (!owner.running || owner.generation != generation) {
+                    if (client >= 0) close(client);
+                    break;
+                }
+            }
+            if (client < 0) {
+                client = [owner newBridgeSocket:nil];
+                if (client < 0) { usleep(1000000); continue; }
+            }
+            @synchronized (owner) { [owner.bridgeSockets addObject:@(client)]; }
+            uint8_t activation[sizeof(M7BridgeActivation) - 1] = {0};
+            NSUInteger received = 0;
+            while (received < sizeof(activation)) {
+                ssize_t count = recv(client, activation + received, sizeof(activation) - received, 0);
+                if (count < 0 && errno == EINTR) continue;
+                if (count <= 0) break;
+                received += (NSUInteger)count;
+            }
+            if (received == sizeof(activation) &&
+                memcmp(activation, M7BridgeActivation, sizeof(activation)) == 0)
+                [owner handleClient:client];
+            else close(client);
+            @synchronized (owner) { [owner.bridgeSockets removeObject:@(client)]; }
+            client = -1;
+        }
+    });
+}
+
+- (BOOL)startBridge:(NSError **)error {
+    if (!self.bridgeMagic.length || !self.bridgePort || !self.requestedUnixSocketPath.length) {
+        if (error) *error = M7RemoteSocketError(EINVAL, @"bridge configuration",
+            @"A configuração do serviço auxiliar é inválida.");
+        return NO;
+    }
+    int first = [self newBridgeSocket:error];
+    if (first < 0) return NO;
+    self.running = YES;
+    self.port = 0;
+    self.unixSocketPath = self.requestedUnixSocketPath;
+    self.startedAt = NSDate.date.timeIntervalSince1970;
+    NSUInteger generation = ++self.generation;
+    [self runBridgeWorker:first generation:generation];
+    for (NSUInteger index = 1; index < 2; ++index)
+        [self runBridgeWorker:-1 generation:generation];
+    return YES;
 }
 
 - (BOOL)finishStartingSocket:(int)server error:(NSError **)error {
@@ -156,6 +296,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
 - (BOOL)start:(NSError **)error {
     @synchronized (self) {
         if (self.running) return YES;
+        if (self.bridgePort) return [self startBridge:error];
         if (self.requestedUnixSocketPath.length) return [self startUnixSocket:error];
         int server = socket(AF_INET, SOCK_STREAM, 0);
         if (server < 0) {
@@ -217,12 +358,15 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
 
 - (void)stop {
     @synchronized (self) {
-        if (!self.running && self.listeningSocket < 0) return;
+        if (!self.running && self.listeningSocket < 0 && self.bridgeSockets.count == 0) return;
         self.running = NO;
         ++self.generation;
         int server = self.listeningSocket;
         self.listeningSocket = -1;
         if (server >= 0) { shutdown(server, SHUT_RDWR); close(server); }
+        for (NSNumber *number in self.bridgeSockets)
+            shutdown(number.intValue, SHUT_RDWR);
+        [self.bridgeSockets removeAllObjects];
         if (self.ownsUnixSocketPath && self.unixSocketPath.length) {
             struct stat info = {0};
             if (lstat(self.unixSocketPath.fileSystemRepresentation, &info) == 0 &&
@@ -328,7 +472,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         @synchronized (self) { ++self.acceptedRequests; self.lastRequestAt = NSDate.date.timeIntervalSince1970; }
         NSString *path = request[@"path"];
         if ([path isEqual:@"/v1/ping"]) {
-            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.7.2",
+            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.7.4",
                 @"transport":self.transport ?: @"", @"port":@(self.port),
                 @"authentication":@"X-Manual7-PIN" } socket:client];
             return;
@@ -372,7 +516,8 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         struct stat info = {0};
         BOOL unixSocketExists = self.unixSocketPath.length &&
             lstat(self.unixSocketPath.fileSystemRepresentation, &info) == 0;
-        NSString *binding = [self.transport isEqual:@"unix"] ? (self.unixSocketPath ?: @"") : @"127.0.0.1";
+        BOOL unixTransport = [self.transport containsString:@"unix"];
+        NSString *binding = unixTransport ? (self.unixSocketPath ?: @"") : @"127.0.0.1";
         return @{ @"running":@(self.running), @"transport":self.transport ?: @"", @"bind":binding,
             @"port":@(self.port), @"requestedUnixSocketPath":self.requestedUnixSocketPath ?: @"",
             @"unixSocketPath":self.unixSocketPath ?: @"",
@@ -381,6 +526,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
                 [NSString stringWithFormat:@"%04o", (unsigned int)(info.st_mode & 0777)] : @"",
             @"unixSocketOwnerUID":unixSocketExists ? @(info.st_uid) : @0,
             @"unixSocketOwnerGID":unixSocketExists ? @(info.st_gid) : @0,
+            @"bridgePort":@(self.bridgePort), @"bridgeWorkers":@(self.bridgeSockets.count),
             @"pinRequired":@YES, @"startedAt":@(self.startedAt),
             @"lastRequestAt":@(self.lastRequestAt), @"acceptedRequests":@(self.acceptedRequests),
             @"rejectedRequests":@(self.rejectedRequests), @"malformedRequests":@(self.malformedRequests) };

@@ -1,0 +1,8 @@
+#!/bin/sh
+if [ "$1" = "configure" ]; then
+    /var/jb/usr/bin/killall Camera >/dev/null 2>&1 || /usr/bin/killall Camera >/dev/null 2>&1 || true
+    /var/jb/bin/launchctl bootout system/dev.manual7.bridge >/dev/null 2>&1 || true
+    /var/jb/bin/launchctl bootstrap system /var/jb/Library/LaunchDaemons/dev.manual7.bridge.plist >/dev/null 2>&1 || \
+        /var/jb/bin/launchctl load /var/jb/Library/LaunchDaemons/dev.manual7.bridge.plist >/dev/null 2>&1 || true
+fi
+exit 0

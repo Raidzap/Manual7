@@ -60,6 +60,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) dispatch_queue_t trackingQueue;
 @property (nonatomic) dispatch_queue_t webcamQueue;
 @property (nonatomic) dispatch_queue_t pairingQueue;
+@property (nonatomic) dispatch_queue_t remoteQueue;
 @property (nonatomic) AVCaptureSession *session;
 @property (nonatomic) AVCaptureDeviceInput *input;
 @property (nonatomic) AVCapturePhotoOutput *photoOutput;
@@ -121,6 +122,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (nonatomic) NSArray<NSDictionary *> *remoteBindAttempts;
 @property (nonatomic) NSMutableArray<NSDictionary *> *remoteEvents;
 @property (nonatomic) NSDictionary *openSSHStatus;
+@property (nonatomic) NSDictionary *remoteStartup;
+@property (atomic) BOOL remoteStarting;
+@property (atomic) NSUInteger remoteGeneration;
 @property (atomic) BOOL videoRecording;
 @property (atomic) BOOL videoProcessing;
 @property (atomic) BOOL videoModeActive;
@@ -237,6 +241,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.trackingQueue = dispatch_queue_create("dev.manual7.tracking", DISPATCH_QUEUE_SERIAL);
     self.webcamQueue = dispatch_queue_create("dev.manual7.webcam.encode", DISPATCH_QUEUE_SERIAL);
     self.pairingQueue = dispatch_queue_create("dev.manual7.pairing.scan", DISPATCH_QUEUE_SERIAL);
+    self.remoteQueue = dispatch_queue_create("dev.manual7.remote.lifecycle", DISPATCH_QUEUE_SERIAL);
     self.controllerID = NSUUID.UUID.UUIDString;
     self.sessionID = NSUUID.UUID.UUIDString;
     self.photoOnlyRequested = atomic_load(&M7PhotoOnlyPreferred);
@@ -251,6 +256,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.webcamEncoder = [M7WebcamEncoder new];
     self.pairingManager = [M7PairingManager new];
     self.remoteBindAttempts = @[];
+    self.remoteStartup = @{ @"state":@"pending", @"reason":@"viewDidLoad" };
     self.videoBackgroundTask = UIBackgroundTaskInvalid;
     self.session = [AVCaptureSession new]; M7MarkSessionOwned(self.session);
     self.peakingThreshold = .2;
@@ -304,7 +310,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.remoteLabel.textColor = UIColor.systemYellowColor;
     self.remoteLabel.adjustsFontSizeToFitWidth = YES;
     self.remoteLabel.minimumScaleFactor = .7;
-    self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH… · API Unix · PIN %@", self.remotePIN];
+    self.remoteLabel.text = [NSString stringWithFormat:@"Bridge iniciando em segundo plano · PIN %@", self.remotePIN];
     self.remoteLabel.accessibilityLabel = @"Controle remoto por SSH";
     [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
     self.pairButton = [self button:@"Ler QR do PC" action:@selector(togglePairingScan)];
@@ -397,7 +403,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
         [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]]];
     [self enableControls:NO];
-    [self startRemoteServer];
+    [self scheduleRemoteServerStart:@"viewDidLoad"];
     __weak typeof(self) weakSelf = self;
     self.timer = [NSTimer scheduledTimerWithTimeInterval:.3 repeats:YES block:^(__unused NSTimer *t) {
         [weakSelf refresh];
@@ -553,7 +559,28 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     });
 }
 
-- (void)startRemoteServer {
+- (void)scheduleRemoteServerStart:(NSString *)reason {
+    if (self.closing) return;
+    NSUInteger generation = ++self.remoteGeneration;
+    self.remoteStarting = YES;
+    NSTimeInterval requestedAt = NSDate.date.timeIntervalSince1970;
+    self.remoteStartup = @{ @"state":@"starting", @"reason":reason ?: @"",
+        @"generation":@(generation), @"requestedAt":@(requestedAt),
+        @"runsOffMainThread":@YES, @"connectTimeoutMilliseconds":@250 };
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.closing || generation != self.remoteGeneration) return;
+        self.remoteLabel.textColor = UIColor.systemYellowColor;
+        self.remoteLabel.text = [NSString stringWithFormat:@"Bridge iniciando em segundo plano · PIN %@",
+            self.remotePIN];
+    });
+    dispatch_async(self.remoteQueue, ^{
+        if (self.closing || generation != self.remoteGeneration) return;
+        [self startRemoteServerForReason:reason requestedAt:requestedAt generation:generation];
+    });
+}
+
+- (void)startRemoteServerForReason:(NSString *)reason requestedAt:(NSTimeInterval)requestedAt
+    generation:(NSUInteger)generation {
     __weak typeof(self) weakSelf = self;
     M7RemoteRequestHandler handler = ^(NSDictionary *request, M7RemoteResponse response) {
         typeof(self) owner = weakSelf;
@@ -563,7 +590,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSMutableArray<NSDictionary *> *attempts = [NSMutableArray new];
     NSError *error = nil;
     BOOL started = self.remoteServer && [self.remoteServer start:&error];
-    if (self.remoteServer) [attempts addObject:@{ @"path":self.remoteSocketPath ?: @"",
+    if (self.remoteServer) [attempts addObject:@{ @"transport":@"launchdBridge",
+        @"path":self.remoteSocketPath ?: @"", @"reused":@YES,
         @"success":@(started), @"error":M7ErrorDetails(error) }];
     if (!started) {
         [self.remoteServer stop];
@@ -571,53 +599,53 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         self.webcamServer = nil;
         self.remoteSocketPath = nil;
         self.webcamSocketPath = nil;
-        NSMutableArray<NSString *> *directories = [NSMutableArray new];
-        NSString *temporary = [NSTemporaryDirectory() stringByStandardizingPath];
-        if (temporary.length) [directories addObject:temporary];
-        for (NSString *legacy in @[@"/var/tmp", @"/tmp"]) {
-            if (![directories containsObject:legacy]) [directories addObject:legacy];
-        }
-        for (NSString *directory in directories) {
-            BOOL isTemporary = [directory isEqual:temporary];
-            // Darwin limits sockaddr_un.sun_path to 104 bytes. A sandbox
-            // container UUID leaves room only for short endpoint names.
-            NSString *apiPath = [directory stringByAppendingPathComponent:
-                isTemporary ? @"m7a" : @"Manual7-api.sock"];
-            NSString *webcamPath = [directory stringByAppendingPathComponent:
-                isTemporary ? @"m7w" : @"Manual7-webcam.sock"];
-            M7RemoteServer *candidate = [[M7RemoteServer alloc] initWithUnixSocketPath:apiPath
-                pin:self.remotePIN handler:handler];
-            NSError *candidateError = nil;
-            BOOL candidateStarted = [candidate start:&candidateError];
-            error = candidateError;
-            [attempts addObject:@{ @"path":apiPath, @"directory":directory,
-                @"temporaryDirectory":@(isTemporary),
-                @"success":@(candidateStarted), @"error":M7ErrorDetails(candidateError) }];
-            if (!candidateStarted) continue;
-            self.remoteServer = candidate;
-            self.remoteSocketPath = apiPath;
-            self.webcamSocketPath = webcamPath;
-            self.webcamServer = [[M7WebcamServer alloc] initWithUnixSocketPath:webcamPath
+        NSString *publicAPIPath = @"/var/tmp/Manual7-api.sock";
+        NSString *publicWebcamPath = @"/var/tmp/Manual7-webcam.sock";
+        M7RemoteServer *bridge = [[M7RemoteServer alloc] initWithBridgePort:27837
+            publicUnixSocketPath:publicAPIPath magic:@"M7-CAMERA-API-1\n"
+            pin:self.remotePIN handler:handler];
+        NSError *bridgeError = nil;
+        BOOL bridgeStarted = [bridge start:&bridgeError];
+        error = bridgeError;
+        [attempts addObject:@{ @"transport":@"launchdBridge", @"path":publicAPIPath,
+            @"workerPort":@27837, @"success":@(bridgeStarted),
+            @"error":M7ErrorDetails(bridgeError) }];
+        if (bridgeStarted) {
+            self.remoteServer = bridge;
+            self.remoteSocketPath = publicAPIPath;
+            self.webcamSocketPath = publicWebcamPath;
+            self.webcamServer = [[M7WebcamServer alloc] initWithBridgePort:27838
+                publicUnixSocketPath:publicWebcamPath magic:@"M7-CAMERA-WEBCAM-1\n"
                 pin:self.remotePIN];
             error = nil;
             started = YES;
-            break;
         }
     }
+    NSTimeInterval completedAt = NSDate.date.timeIntervalSince1970;
+    NSTimeInterval duration = MAX(0, completedAt - requestedAt);
     self.remoteBindAttempts = attempts;
-    self.remoteLabel.textColor = started ? UIColor.systemYellowColor : UIColor.systemRedColor;
-    self.remoteLabel.text = started ? [NSString stringWithFormat:@"OpenSSH… · API Unix · PIN %@",
-        self.remotePIN] : @"API remota indisponível · ver diagnóstico";
+    self.remoteStarting = NO;
+    self.remoteStartup = @{ @"state":started ? @"ready" : @"failed",
+        @"reason":reason ?: @"", @"generation":@(generation),
+        @"requestedAt":@(requestedAt), @"completedAt":@(completedAt),
+        @"durationMilliseconds":@(duration * 1000), @"runsOffMainThread":@YES,
+        @"connectTimeoutMilliseconds":@250, @"fallbackSocketsAttempted":@NO,
+        @"error":M7ErrorDetails(error) };
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.closing || generation != self.remoteGeneration) return;
+        self.remoteLabel.textColor = started ? UIColor.systemYellowColor : UIColor.systemRedColor;
+        self.remoteLabel.text = started ? [NSString stringWithFormat:@"OpenSSH… · API bridge · PIN %@",
+            self.remotePIN] : @"API indisponível · câmera disponível";
+    });
     [self recordRemoteEvent:started ? @"serverStarted" : @"serverStartFailed" requestID:@""
         details:@{ @"server":self.remoteServer.snapshot ?: @{}, @"error":M7ErrorDetails(error),
-            @"bindAttempts":attempts, @"temporaryDirectory":NSTemporaryDirectory() ?: @"",
-            @"homeDirectory":NSHomeDirectory() ?: @"" }];
-    dispatch_async(self.sessionQueue, ^{
-        NSDictionary *status = M7OpenSSHStatus();
-        self.openSSHStatus = status;
-        [self recordRemoteEvent:@"openSSHChecked" requestID:@"" details:status];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.closing || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+            @"bindAttempts":attempts, @"startup":self.remoteStartup ?: @{} }];
+    NSDictionary *status = M7OpenSSHStatus();
+    self.openSSHStatus = status;
+    [self recordRemoteEvent:@"openSSHChecked" requestID:@"" details:status];
+    dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.closing || generation != self.remoteGeneration ||
+                UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
             if (!started && [status[@"serviceReachable"] boolValue]) {
                 self.remoteLabel.textColor = UIColor.systemRedColor;
                 self.remoteLabel.text = [NSString stringWithFormat:@"SSH %@ · API indisponível",
@@ -627,25 +655,30 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 self.remoteLabel.text = @"API indisponível · ver diagnóstico";
             } else if ([status[@"serviceReachable"] boolValue]) {
                 self.remoteLabel.textColor = UIColor.systemGreenColor;
-                self.remoteLabel.text = [NSString stringWithFormat:@"SSH %@ · API Unix · PIN %@",
+                self.remoteLabel.text = [NSString stringWithFormat:@"SSH %@ · API bridge · PIN %@",
                     status[@"preferredPort"], self.remotePIN];
             } else if ([status[@"installed"] boolValue]) {
                 self.remoteLabel.textColor = UIColor.systemYellowColor;
-                self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH iniciando · API Unix · PIN %@",
+                self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH iniciando · API bridge · PIN %@",
                     self.remotePIN];
             } else {
                 self.remoteLabel.textColor = UIColor.systemRedColor;
                 self.remoteLabel.text = @"OpenSSH ausente · reinstale M7";
             }
-        });
     });
 }
 
 - (void)stopRemoteServerReason:(NSString *)reason {
-    NSDictionary *before = self.remoteServer.snapshot ?: @{};
-    [self.remoteServer stop];
-    [self recordRemoteEvent:@"serverStopped" requestID:@""
-        details:@{ @"reason":reason ?: @"", @"before":before }];
+    NSUInteger generation = ++self.remoteGeneration;
+    self.remoteStarting = NO;
+    dispatch_async(self.remoteQueue, ^{
+        NSDictionary *before = self.remoteServer.snapshot ?: @{};
+        [self.remoteServer stop];
+        self.remoteStartup = @{ @"state":@"stopped", @"reason":reason ?: @"",
+            @"generation":@(generation), @"stoppedAt":@(NSDate.date.timeIntervalSince1970) };
+        [self recordRemoteEvent:@"serverStopped" requestID:@""
+            details:@{ @"reason":reason ?: @"", @"before":before }];
+    });
 }
 
 - (NSDictionary *)remoteUIState {
@@ -719,7 +752,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.2", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.4", @"state":state });
             }];
         });
         return;
@@ -974,7 +1007,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.2";
+    self.captureTrace[@"version"] = @"0.7.4";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1141,7 +1174,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
     diagnostic[@"rawCompatibility"] = rawCompatibility;
-    diagnostic[@"version"] = @"0.7.2";
+    diagnostic[@"version"] = @"0.7.4";
     self.lensDiagnostic = diagnostic;
     [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
@@ -1312,6 +1345,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 [self.pairingManager submitPairing:pairing pin:self.remotePIN preferredSSHPort:preferred
                     availableSSHPorts:ports apiSocketPath:self.remoteSocketPath
                     webcamSocketPath:self.webcamSocketPath
+                    apiBridgePort:@27839 webcamBridgePort:@27840
                     completion:^(NSDictionary *response, NSError *error) {
                     if (generation != self.pairingGeneration) return;
                     self.pairingSubmitting = NO;
@@ -1795,7 +1829,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.2";
+    self.videoTrace[@"version"] = @"0.7.4";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -2506,11 +2540,12 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.2", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.4", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
-        @"pairing":[self.pairingManager snapshot], @"remoteBindAttempts":self.remoteBindAttempts ?: @[],
+        @"pairing":[self.pairingManager snapshot], @"remoteStartup":self.remoteStartup ?: @{},
+        @"remoteBindAttempts":self.remoteBindAttempts ?: @[],
         @"remoteServer":self.remoteServer.snapshot ?: @{}, @"remoteEvents":self.remoteEvents ?: @[],
         @"openSSH":self.openSSHStatus ?: @{},
         @"pendingVideos":pendingVideoDetails,
@@ -2534,7 +2569,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.2", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.4", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -2582,7 +2617,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.2" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.4" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
@@ -2850,7 +2885,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         });
     } else if ([note.name isEqualToString:UIApplicationDidBecomeActiveNotification] ||
                [note.name isEqualToString:AVCaptureSessionInterruptionEndedNotification]) {
-        [self startRemoteServer];
+        [self scheduleRemoteServerStart:@"applicationActive"];
         dispatch_async(self.sessionQueue, ^{
             if (self.configured && !self.closing) {
                 [self.session startRunning];

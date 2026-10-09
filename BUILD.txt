@@ -7,6 +7,7 @@ Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
 Build: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
 Testes Linux: 35 aprovados; 1 conjunto exclusivo de macOS ignorado no Linux.
+CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/37996264620
 Inicialização: API, verificação OpenSSH e reconexões fora da main thread; connect limitado a 250 ms; nenhum fallback síncrono no viewDidLoad.
 Bridge: LaunchDaemon como mobile, workers autenticados, handshake de ativação, descarte de worker encerrado, sockets Unix 0600 de diagnóstico e endpoints TCP somente em 127.0.0.1:27839/27840.
 OpenSSH físico: direct-streamlocal recusou o socket Unix; o encaminhamento TCP para os listeners loopback foi adotado e confirmado pelo túnel do notebook.

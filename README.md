@@ -238,7 +238,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 A suíte da 0.7.4 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar o LaunchDaemon, autenticação dos workers, descarte de worker encerrado, endpoint TCP loopback, transportes TCP e Unix da API, MJPEG, parser/retorno de pareamento, Vision, tokens de uso único, permissões `0600`, autenticação por PIN, multipart, geometria dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do OpenSSH, túnel duplo e comandos dos clientes Python. O reconhecimento positivo do QR continua como validação obrigatória no iPhone.
 
-A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37860682640).
+A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37996264620).
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
 

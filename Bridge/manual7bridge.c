@@ -100,7 +100,7 @@ static int m7_tcp_listener(uint16_t port) {
 #endif
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_addr.s_addr = htonl(UINT32_C(0x7f000001));
     if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(fd, 8) != 0) {
         int code = errno;
         close(fd);
@@ -140,7 +140,7 @@ static int m7_worker_alive(int worker) {
     if (descriptor.revents & (POLLHUP | POLLERR | POLLNVAL)) return 0;
     if (descriptor.revents & POLLIN) {
         uint8_t byte = 0;
-        ssize_t count = recv(worker, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        ssize_t count = recv(worker, &byte, 1, MSG_PEEK);
         if (count == 0) return 0;
         if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return 0;
     }

@@ -18,4 +18,4 @@ Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe
 Vídeo/Reframe: master H.264 4:3 a 30 fps, AAC quando disponível, exportação 1920x1080, 1080x1920 ou ambas, central ou rastreada.
 Webcam: MJPEG autenticado via 127.0.0.1:27840, 1280x720 ou 720x1280, alvo de 10 fps, recorte central ou rastreado e somente vídeo.
 Validação pendente no aparelho: confirmar abertura visual imediata do painel, ping/state com o M7 aberto, QR, webcam, vídeo e RAW DNG explícito.
-SHA-256 do .deb: a618bfe3f56b34a78bd4b0490428db066a9a1717a596c7e14658b10fda81be71
+SHA-256 do .deb: 84d449364417ecbb4b116f2ed232912056a58eaf6063244eed47b699e055fcbf

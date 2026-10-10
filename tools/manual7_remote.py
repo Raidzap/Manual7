@@ -110,11 +110,13 @@ def tunnel_forwarding(local_port: int, remote_socket: str,
 def webcam_ffmpeg_command(executable: str, webcam_url: str, pin: str,
                           device: Path) -> list[str]:
     return [executable, "-hide_banner", "-loglevel", "warning",
-            "-fflags", "nobuffer", "-flags", "low_delay",
-            "-thread_queue_size", "64",
+            "-fflags", "nobuffer+discardcorrupt", "-flags", "low_delay",
+            "-thread_queue_size", "256",
             "-headers", f"X-Manual7-PIN: {pin}\r\n",
+            "-use_wallclock_as_timestamps", "1",
             "-f", "mpjpeg", "-i", webcam_url,
-            "-an", "-vf", "format=yuv420p", "-r", "10",
+            "-an", "-vf", "zscale=iw:ih:in_range=full:out_range=limited:filter=bilinear,format=yuv420p",
+            "-color_range", "tv", "-fps_mode", "passthrough",
             "-f", "v4l2", str(device)]
 
 

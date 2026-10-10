@@ -21,6 +21,8 @@ static void AssertJPEGSize(NSData *data, NSUInteger width, NSUInteger height) {
 
 int main(void) {
     @autoreleasepool {
+        assert(M7WebcamTargetFPS == 30);
+        assert(M7WebcamJPEGQuality > .5 && M7WebcamJPEGQuality < .8);
         CGRect horizontal = M7WebcamCropRect(CGSizeMake(1920, 1440), CGSizeMake(1280, 720),
             CGPointMake(.5, .5));
         AssertNear(horizontal.origin.x, 0); AssertNear(horizontal.origin.y, 180);

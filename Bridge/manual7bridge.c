@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -39,6 +40,16 @@ typedef struct {
 } M7WorkerPool;
 
 static const uint8_t M7BridgeActivation[] = "M7-BRIDGE-CLIENT-1\n";
+
+static void m7_tune_stream(int fd) {
+    int enabled = 1;
+    int buffer_size = 512 * 1024;
+    struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer_size, sizeof(buffer_size));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+}
 
 static int m7_send_all(int fd, const uint8_t *bytes, size_t length) {
     size_t sent = 0;
@@ -118,6 +129,7 @@ static int m7_accept_worker(int listener, const char *magic) {
             if (errno == EINTR) continue;
             return -1;
         }
+        m7_tune_stream(worker);
         struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
         setsockopt(worker, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         uint8_t received[64] = {0};
@@ -188,7 +200,7 @@ static void *m7_proxy_pair(void *context) {
     free(pair);
     int open_left = 1;
     int open_right = 1;
-    uint8_t buffer[16 * 1024];
+    uint8_t buffer[64 * 1024];
     while (open_left || open_right) {
         struct pollfd descriptors[2] = {
             {.fd = left, .events = open_left ? POLLIN : 0},
@@ -272,6 +284,7 @@ static void *m7_channel_main(void *context) {
             if (errno == EINTR) continue;
             break;
         }
+        m7_tune_stream(client);
         int worker = m7_take_live_worker(&pool);
         M7BridgePair *pair = calloc(1, sizeof(*pair));
         if (!pair) {

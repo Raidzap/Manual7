@@ -1,12 +1,20 @@
-# Manual7 — 0.7.4 experimental
+# Manual7 — 0.7.5 experimental
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.1 corrige a configuração que ainda estava implícita. A 0.7.4 move a API remota para um bridge `launchd` fora do sandbox da Câmera e inicia toda a camada remota em segundo plano, com timeout de conexão de 250 ms, sem atrasar o visor e os controles. **RAW, vídeo, Reframe, rastreamento, controle remoto, webcam e pareamento ainda precisam de validação física completa no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.4 moveu a API remota para um bridge `launchd` fora do sandbox da Câmera. A 0.7.5 corrige o modo da webcam e remove os limites artificiais de 10 fps. **RAW, vídeo, Reframe, rastreamento e a webcam otimizada ainda precisam de validação física completa no iPhone.**
 
 ## Manual7 Studio para Linux
 
-O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH, visor MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.0](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.0).
+O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH, visor MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.1](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.1).
+
+## Webcam estável na 0.7.5
+
+Ao ativar a webcam, o M7 agora troca primeiro para **Vídeo**, espera a sessão 4:3 a 30 fps ficar ativa e só então abre o endpoint MJPEG. A troca de volta para Foto fica bloqueada até desligar a webcam, evitando reconstruir a topologia do `AVCaptureSession` com um cliente de frames conectado.
+
+O limite fixo de 10 fps foi removido do iPhone e do FFmpeg. O encoder tenta processar cada frame entregue pela câmera; quando o A10 ou a rede não acompanha, descarta trabalho antigo e conserva somente o frame mais recente. O servidor mantém no máximo um frame pendente, evitando que uma conexão SSH lenta aumente continuamente a latência e a memória. O bridge usa buffers maiores e blocos de 64 KiB.
+
+`webcam.inputFrames`, `encodedFrames`, `busyDrops`, tempos de codificação e `server.framesSubmitted`, `framesPublished`, `framesCoalesced`, `effectiveFPS` e tamanho do último JPEG mostram separadamente sensor, encoder e transporte. O FFmpeg converte explicitamente JPEG full-range para YUV limited-range, eliminando os avisos de pixel format depreciado sem interpretar a faixa de luminância de forma ambígua.
 
 ## OpenSSH e controle remoto
 
@@ -34,7 +42,7 @@ O token do QR vence, só funciona uma vez e não é gravado. O PIN também conti
 
 O controle **Webcam** inicia um servidor MJPEG no mesmo diretório Unix selecionado para a API, também com permissão `0600` e autenticação pelo PIN atual. O túnel do cliente encaminha simultaneamente a API para `127.0.0.1:17837` e o vídeo para `127.0.0.1:17838`. No Linux, `webcam-feed` usa FFmpeg para alimentar uma câmera virtual `v4l2loopback` que pode ser selecionada no OBS, navegador ou aplicativo de reunião.
 
-Os frames vêm da mesma saída AVFoundation e recebem as alterações de ISO, shutter, EV, foco, travas e lente. **WC formato** escolhe 1280 × 720 horizontal ou 720 × 1280 vertical. Quando **Rastrear** está ativo, o centro suavizado da pessoa/rosto dirige o recorte da webcam. O encoder limita a saída a 10 fps e só trabalha quando há cliente conectado; frames novos são ignorados enquanto o anterior ainda está sendo codificado, evitando acumular uma fila no A10.
+Os frames vêm da mesma saída AVFoundation e recebem as alterações de ISO, shutter, EV, foco, travas e lente. **WC formato** escolhe 1280 × 720 horizontal ou 720 × 1280 vertical. Quando **Rastrear** está ativo, o centro suavizado da pessoa/rosto dirige o recorte da webcam. O alvo é 30 fps; o FPS efetivo depende do tempo de codificação no A10 e da vazão Wi-Fi/SSH, sem acumular uma fila atrasada.
 
 Esta versão transmite somente vídeo. O focus peaking não é queimado no sinal. Um formato de webcam é emitido por vez; a exportação local de vídeo continua oferecendo **Ambos**. Ao ir para segundo plano, fechar M7 ou perder a sessão, o socket e os clientes são encerrados. Estado, formato, clientes, frames, bytes, descartes e erros do encoder ficam em `webcam` e `sessionEvents` no relatório.
 
@@ -115,7 +123,7 @@ Os dois seletores foram corrigidos. Um protocolo adicional os torna obrigatório
 | Rastreamento | Pessoa com tronco superior e rosto como fallback via Vision, análise máxima de 5 Hz, suavização e retorno gradual ao centro quando o alvo é perdido. |
 | Controle remoto | API HTTP/JSON em socket Unix com PIN por sessão e cliente Python para Linux através de túnel SSH. |
 | Pareamento QR | QR de uso único reconhecido com Vision; callback local entrega porta SSH/PIN ao script, que abre os túneis sem digitar o IP do iPhone. |
-| Webcam Linux | MJPEG autenticado no túnel SSH, 1280 × 720 ou 720 × 1280 a até 10 fps, entregue a `v4l2loopback` por FFmpeg. |
+| Webcam Linux | MJPEG autenticado no túnel SSH, 1280 × 720 ou 720 × 1280 com alvo de 30 fps e fila de frame mais recente, entregue a `v4l2loopback` por FFmpeg. |
 | Foco manual | Posição normalizada de 0 a 1, sem inferir distância em metros; atualiza durante o arraste com limitação de frequência. |
 | Focus peaking | Bordas em verde, limiar ajustável, análise de luminância reduzida a até 480 pixels na maior dimensão e no máximo 10 atualizações/s. |
 | Compensação EV | Passos de 1/3 EV em AUTO, dentro dos limites do aparelho. Em M, o fotômetro auxilia o ajuste de ISO e shutter. |
@@ -147,18 +155,18 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [release v0.7.4](https://github.com/Raidzap/Manual7/releases/tag/v0.7.4).
+Baixe o pacote `.deb` e seu checksum na [release v0.7.5](https://github.com/Raidzap/Manual7/releases/tag/v0.7.5).
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
 2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes do bootstrap.
-3. Transfira `dev.manual7.camera_0.7.4_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
+3. Transfira `dev.manual7.camera_0.7.5_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
 4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
 Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
 
 ```sh
 cd /var/mobile/Downloads
-sudo apt install ./dev.manual7.camera_0.7.4_iphoneos-arm64.deb
+sudo apt install ./dev.manual7.camera_0.7.5_iphoneos-arm64.deb
 ```
 
 Use `apt` ou Sileo nesta versão: `dpkg -i` sozinho não baixa uma dependência ausente. O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. As dependências `mobilesubstrate` e `openssh-server` são fornecidas pelo ambiente rootless/Procursus; o script do OpenSSH carrega o serviço no `launchd`.
@@ -240,7 +248,7 @@ O teste `bash tests/run_error_details_native.sh` usa Foundation no macOS para ve
 
 `bash tests/run_video_reframe_native.sh` cria um master H.264 real, verifica a geometria aspect-fill central e móvel e exporta arquivos 16:9 e 9:16 com AVFoundation. `bash tests/run_video_recorder_native.sh` cobre término sem frames, diagnóstico e cancelamento idempotente. `bash tests/run_subject_tracker_native.sh` executa o caminho sem pessoa em um pixel buffer real, conferindo rastros temporizados, estado, reset e JSON. Esses testes exigem macOS e não simulam câmera, microfone, PhotoKit, temperatura, uma pessoa real ou capacidade de codificação do iPhone.
 
-A suíte da 0.7.4 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar o LaunchDaemon, autenticação dos workers, descarte de worker encerrado, endpoint TCP loopback, transportes TCP e Unix da API, MJPEG, parser/retorno de pareamento, Vision, tokens de uso único, permissões `0600`, autenticação por PIN, multipart, geometria dos recortes, JPEG 1280 × 720 e 720 × 1280, contadores, desligamento, detecção do OpenSSH, túnel duplo e comandos dos clientes Python. O reconhecimento positivo do QR continua como validação obrigatória no iPhone.
+A suíte da 0.7.5 também valida a seleção pela interseção Bayer/DNG e a representação FourCC, além de compilar e exercitar o LaunchDaemon, autenticação dos workers, descarte de worker encerrado, endpoint TCP loopback, transportes TCP e Unix da API, MJPEG, parser/retorno de pareamento, Vision, tokens de uso único, permissões `0600`, autenticação por PIN, multipart, geometria dos recortes, JPEG 1280 × 720 e 720 × 1280, cadência de 30 fps, fila limitada ao frame mais recente, conversão explícita de faixa de cor, contadores, desligamento, detecção do OpenSSH, túnel duplo e comandos dos clientes Python. O reconhecimento positivo do QR continua como validação obrigatória no iPhone.
 
 A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/37996264620).
 

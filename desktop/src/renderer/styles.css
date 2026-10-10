@@ -66,6 +66,7 @@ button { color: inherit; }
 .safe-frame::before { left: 33.333%; top: 0; bottom: 0; width: 1px; box-shadow: calc(33.333vw - 36px) 0 rgba(255,255,255,.11); }
 .safe-frame::after { top: 33.333%; left: 0; right: 0; height: 1px; box-shadow: 0 calc(33.333vh - 34px) rgba(255,255,255,.11); }
 .live-chip { position: absolute; top: 18px; left: 18px; display: flex; align-items: center; gap: 7px; padding: 7px 10px; background: rgba(2,8,5,.76); backdrop-filter: blur(12px); border-radius: 999px; font-size: 10px; letter-spacing: .12em; }
+.live-chip em { color: #a8c0b5; padding-left: 4px; border-left: 1px solid rgba(255,255,255,.15); font-style: normal; letter-spacing: .04em; }
 .viewport-footer { position: absolute; left: 16px; right: 16px; bottom: 14px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
 .viewport-footer div { padding: 9px 10px; border-radius: 9px; background: rgba(2,8,5,.74); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.07); }
 .viewport-footer small { color: #8fac9e; display: block; font-size: 8px; letter-spacing: .12em; }

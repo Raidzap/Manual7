@@ -64,6 +64,11 @@ int main(void) {
             usleep(10000);
         NSDictionary *snapshot = server.snapshot;
         assert([snapshot[@"framesPublished"] integerValue] == 1);
+        assert([snapshot[@"framesSubmitted"] integerValue] >= 1);
+        assert([snapshot[@"framesCoalesced"] integerValue] <= [snapshot[@"framesSubmitted"] integerValue]);
+        assert([snapshot[@"targetFPS"] integerValue] == 30);
+        assert([snapshot[@"maxPendingFrames"] integerValue] == 1);
+        assert([snapshot[@"lastFrameBytes"] integerValue] == (NSInteger)jpeg.length);
         assert([snapshot[@"clientsAccepted"] integerValue] == 1);
         assert([snapshot[@"clientsRejected"] integerValue] == 1);
         assert([snapshot[@"lastWidth"] integerValue] == 1280);

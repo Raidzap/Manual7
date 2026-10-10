@@ -1,6 +1,6 @@
 # Controle remoto do Manual7
 
-O Manual7 0.7.4 executa o servidor HTTP/JSON no processo Câmera e o conecta a um bridge gerenciado pelo `launchd`. O bridge publica a API em `127.0.0.1:27839`; o notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado. Cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7. A mesma sessão SSH encaminha a webcam de `127.0.0.1:27840` para `127.0.0.1:17838`.
+O Manual7 0.7.5 executa o servidor HTTP/JSON no processo Câmera e o conecta a um bridge gerenciado pelo `launchd`. O bridge publica a API em `127.0.0.1:27839`; o notebook encaminha esse endpoint para `127.0.0.1:17837` por um túnel SSH autenticado. Cada requisição, exceto `ping`, precisa do PIN de seis dígitos mostrado na linha **Remoto** do M7. A mesma sessão SSH encaminha a webcam de `127.0.0.1:27840` para `127.0.0.1:17838`.
 
 O primeiro teste físico da 0.5.0 retornou `EPERM` em `bind(AF_INET)` no sandbox do processo Câmera. O teste da 0.7.1 confirmou que o OpenSSH estava acessível, mas o sandbox também impedia criar os sockets globais em `/var/tmp`. Na 0.7.4, somente o LaunchDaemon fora desse sandbox executa `bind`; a Câmera usa conexões loopback de saída com timeout curto. O formato `ssh -L porta_local:127.0.0.1:porta_bridge` mantém os endpoints fora da rede Wi-Fi e os expõe apenas no notebook autenticado.
 
@@ -50,7 +50,7 @@ Para uma conexão manual, basta informar o IP e, se necessário, a porta SSH:
 python3 tools/manual7_remote.py tunnel 192.168.1.50 --ssh-port 2222
 ```
 
-Os padrões `--remote-port 27839` e `--webcam-remote-port 27840` correspondem aos listeners loopback do helper 0.7.4.
+Os padrões `--remote-port 27839` e `--webcam-remote-port 27840` correspondem aos listeners loopback do helper 0.7.5.
 
 ## Ações
 

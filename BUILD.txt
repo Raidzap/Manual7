@@ -1,22 +1,27 @@
-Manual7 0.7.4 — registro de build
-Data local: 2026-10-09
+Manual7 0.7.5 / Manual7 Studio 0.1.1 — registro de build
+Data local: 2026-10-10
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
-Arquitetura: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
-Alvo: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
-Build: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
-Testes Linux: 35 aprovados; 1 conjunto exclusivo de macOS ignorado no Linux.
-CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/37996264620
+Arquitetura móvel: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
+Alvo móvel: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
+Build móvel: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
+Build Linux: AppImage x86_64 gerado com Electron 44.7.0 e electron-builder 26.15.3.
+Testes locais: 38 testes Python aprovados, 1 conjunto exclusivo de macOS ignorado no Linux; 3 suítes Node aprovadas.
+Smoke test Linux: AppImage abriu, carregou a interface, detectou FFmpeg, filtro zscale e /dev/video10; permaneceu ativo até o encerramento controlado.
+Auditoria npm de produção: 35 dependências, zero vulnerabilidades conhecidas.
+CI macOS: pendente da publicação deste commit.
 Inicialização: API, verificação OpenSSH e reconexões fora da main thread; connect limitado a 250 ms; nenhum fallback síncrono no viewDidLoad.
-Bridge: LaunchDaemon como mobile, workers autenticados, handshake de ativação, descarte de worker encerrado, sockets Unix 0600 de diagnóstico e endpoints TCP somente em 127.0.0.1:27839/27840.
-OpenSSH físico: direct-streamlocal recusou o socket Unix; o encaminhamento TCP para os listeners loopback foi adotado e confirmado pelo túnel do notebook.
-Instalação física: pacote instalado; postinst iniciou system/dev.manual7.bridge automaticamente e launchctl confirmou o processo ativo.
+Bridge: LaunchDaemon como mobile, workers autenticados, TCP_NODELAY, buffers de 512 KiB, relay em blocos de 64 KiB e endpoints TCP somente em 127.0.0.1:27839/27840.
+Modo da webcam: a ativação seleciona Vídeo e termina a configuração da AVCaptureSession antes de abrir o servidor; a troca para Foto fica bloqueada enquanto a webcam estiver ativa.
+Cadência da webcam: alvo de 30 fps sem limitador artificial; encoder processa o frame mais recente disponível e o servidor mantém no máximo um frame pendente.
+Diagnóstico da webcam: registra frames recebidos, codificados, descartados por encoder ocupado, coalescidos pela rede, tempo de encode, bytes do último frame e FPS efetivamente publicado.
+Conversão Linux: FFmpeg usa timestamps do relógio de chegada, fps_mode passthrough e zscale full-range para limited-range antes do yuv420p, eliminando o aviso de pixel format deprecated.
 RAW físico anterior: RAW e RAW+JPEG falharam com AVFoundation -11800 / OSStatus -12780 antes de produzir pixel buffer ou bytes.
 RAW: valida AVFileTypeDNG, cruza supportedRawPhotoPixelFormatTypesForFileType, prepara buffers e registra a cadeia NSError completa.
 Pareamento QR: callback temporário autenticado informa PIN, porta SSH e portas loopback fixas do bridge; cliente valida os valores e abre os dois encaminhamentos TCP.
 Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe o payload pela entrada padrão.
 Vídeo/Reframe: master H.264 4:3 a 30 fps, AAC quando disponível, exportação 1920x1080, 1080x1920 ou ambas, central ou rastreada.
-Webcam: MJPEG autenticado via 127.0.0.1:27840, 1280x720 ou 720x1280, alvo de 10 fps, recorte central ou rastreado e somente vídeo.
-Validação pendente no aparelho: confirmar abertura visual imediata do painel, ping/state com o M7 aberto, QR, webcam, vídeo e RAW DNG explícito.
-SHA-256 do .deb: 84d449364417ecbb4b116f2ed232912056a58eaf6063244eed47b699e055fcbf
+Validação física pendente: medir effectiveFPS, averageEncodeMilliseconds e framesCoalesced no iPhone 7 Plus durante uma sessão longa de webcam.
+SHA-256 do .deb: 2ab2a7adb2cb5090eb0fc3fbfb08f9be6149346a2b89477ff114436e7f74d290
+SHA-256 do AppImage: d82d0b6b11fda54d497a9e56ea6f30e1c36a4bd838618ff02a4010cc2b90dc0c

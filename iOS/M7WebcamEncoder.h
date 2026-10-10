@@ -4,6 +4,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT const NSUInteger M7WebcamTargetFPS;
+FOUNDATION_EXPORT const CGFloat M7WebcamJPEGQuality;
+
 // normalizedCenter uses the same top-left origin as the M7 preview/tracker.
 FOUNDATION_EXPORT CGRect M7WebcamCropRect(CGSize sourceSize, CGSize targetSize,
     CGPoint normalizedCenter);

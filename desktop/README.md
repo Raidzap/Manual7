@@ -2,11 +2,11 @@
 
 Aplicativo gráfico para parear o M7 por QR, abrir o túnel SSH, acompanhar o retorno MJPEG e ajustar a câmera do iPhone em tempo real. O AppImage não precisa instalar o Electron no sistema.
 
-Baixe `Manual7-Studio-0.1.0-x86_64.AppImage` na [release desktop-v0.1.0](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.0), torne-o executável e abra:
+Baixe `Manual7-Studio-0.1.1-x86_64.AppImage` na [release desktop-v0.1.1](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.1), torne-o executável e abra:
 
 ```sh
-chmod +x Manual7-Studio-0.1.0-x86_64.AppImage
-./Manual7-Studio-0.1.0-x86_64.AppImage
+chmod +x Manual7-Studio-0.1.1-x86_64.AppImage
+./Manual7-Studio-0.1.1-x86_64.AppImage
 ```
 
 ## Fluxo de uso
@@ -21,7 +21,7 @@ O QR expira em dois minutos e só pode ser usado uma vez. A senha SSH fica somen
 
 ## Câmera virtual
 
-A prévia funciona sem configuração extra. Para apresentar o sinal a OBS, Meet ou outro programa como uma webcam V4L2, instale FFmpeg e crie um dispositivo `v4l2loopback`:
+A prévia funciona sem configuração extra. Para apresentar o sinal a OBS, Meet ou outro programa como uma webcam V4L2, instale FFmpeg com o filtro `zscale` e crie um dispositivo `v4l2loopback`:
 
 ```sh
 sudo apt install ffmpeg v4l2loopback-dkms
@@ -43,4 +43,4 @@ npm test
 npm run build:appimage
 ```
 
-O arquivo final fica em `desktop/dist/Manual7-Studio-0.1.0-x86_64.AppImage`. O aplicativo requer uma versão do M7 que publique o bridge remoto nas portas loopback 27839 e 27840; a versão móvel 0.7.4 contém esse bridge.
+O arquivo final fica em `desktop/dist/Manual7-Studio-0.1.1-x86_64.AppImage`. Para troca segura ao modo Vídeo e transmissão de até 30 fps, use o M7 móvel 0.7.5 ou superior.

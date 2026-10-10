@@ -1,6 +1,8 @@
 # Usar o Manual7 como webcam no Linux
 
-O Manual7 0.7.4 transmite o mesmo `AVCaptureVideoDataOutput` usado pelo visor e pelos controles da câmera através do bridge `launchd` em `127.0.0.1:27840`. ISO, shutter, EV, foco manual, AE-L/AF-L, lente e rastreamento afetam os frames da webcam imediatamente. O M7 codifica MJPEG a 10 fps e oferece uma saída horizontal 1280 × 720 ou vertical 720 × 1280.
+O Manual7 0.7.5 transmite o mesmo `AVCaptureVideoDataOutput` usado pelo visor e pelos controles da câmera através do bridge `launchd` em `127.0.0.1:27840`. ISO, shutter, EV, foco manual, AE-L/AF-L, lente e rastreamento afetam os frames da webcam imediatamente. O M7 tenta codificar MJPEG na cadência de 30 fps da câmera e oferece uma saída horizontal 1280 × 720 ou vertical 720 × 1280.
+
+Ativar a webcam muda o M7 para Vídeo antes de abrir o stream. O controle Foto/Vídeo fica bloqueado até a webcam ser desligada. Sob pressão do encoder ou da rede, o M7 conserva somente o frame mais recente: a imagem pode ter atraso de transporte, mas a fila não cresce indefinidamente. O diagnóstico separa frames recebidos, codificados, publicados e substituídos.
 
 O fluxo permanece dentro do SSH: o bridge escuta apenas em `127.0.0.1:27840` no iPhone e exige o PIN do painel M7 na requisição MJPEG. O pareamento informa a porta ao cliente, que a encaminha para `127.0.0.1:17838`; o FFmpeg lê o MJPEG autenticado e grava em um dispositivo virtual `v4l2loopback`.
 
@@ -68,10 +70,9 @@ python3 tools/manual7_remote.py set focusPosition 0.42
 python3 tools/manual7_remote.py set lens wide
 ```
 
-Para Reframe acompanhado por pessoa, ative o modo Vídeo e o rastreamento. A gravação local não precisa ser iniciada:
+Ativar a webcam já coloca o M7 em Vídeo. Para Reframe acompanhado por pessoa, ative o rastreamento; a gravação local não precisa ser iniciada:
 
 ```sh
-python3 tools/manual7_remote.py set captureMode video
 python3 tools/manual7_remote.py set tracking true
 python3 tools/manual7_remote.py webcam start --format vertical
 ```
@@ -85,7 +86,9 @@ python3 tools/manual7_remote.py state
 python3 tools/manual7_remote.py diagnostic --output relatorio-m7.json
 ```
 
-`state.webcam` e `report.webcam` registram formato, dimensões, estado solicitado/ativo, codificação, frames ignorados por carga, último erro, clientes, bytes e frames enviados, permissões e caminho do socket. Eventos como `webcamStarted`, `webcamStopped`, `webcamStartFailed` e `webcamEncodeError` ficam em `sessionEvents`.
+`state.webcam` e `report.webcam` registram formato, dimensões, modo Vídeo, frames recebidos/codificados, tempo médio de JPEG e descartes por encoder ocupado. `server` acrescenta frames submetidos/publicados/substituídos, FPS efetivo, tamanho e bytes enviados. Eventos como `webcamVideoModeRequested`, `webcamStarted`, `webcamStopped`, `captureModeChangeBlocked`, `webcamStartFailed` e `webcamEncodeError` ficam em `sessionEvents`.
+
+Os avisos `deprecated pixel format used` vinham do `swscale`: JPEG usa faixa completa e a saída V4L2 usa `yuv420p` de faixa limitada. O cliente 0.7.5 usa `zscale` com `in_range=full` e `out_range=limited`, seguido de `color_range=tv`. Assim a conversão fica explícita e o aviso desaparece. O pacote FFmpeg da distribuição precisa incluir o filtro `zscale`, como ocorre no pacote padrão do Ubuntu/Linux Mint.
 
 Se não houver imagem, confirme nesta ordem: M7 em primeiro plano, túnel ainda aberto, PIN atual, `state.webcam.server.running: true`, `clientCount` maior que zero, `framesPublished` aumentando e `/dev/video10` existente. A Câmera em segundo plano encerra a API e a webcam de forma intencional.
 

@@ -151,6 +151,8 @@ function applyState(envelope) {
   $("hudEV").textContent = `${Number(actual.exposureBias || 0).toFixed(1)} EV`;
   $("hudFocus").textContent = Number.isFinite(Number(actual.focusPosition)) ? Number(actual.focusPosition).toFixed(2) : "—";
   $("hudLens").textContent = state.lens === "tele" ? "2×" : "1×";
+  const streamFPS = Number(state.webcam?.server?.effectiveFPS || 0);
+  $("streamFPS").textContent = streamFPS > 0 ? `${streamFPS.toFixed(1).replace(".", ",")} fps` : "— fps";
   $("lensValue").textContent = state.lens === "tele" ? "TELEOBJETIVA" : "GRANDE-ANGULAR";
   $("exposureReadout").textContent = state.exposureMode === "manual" ? "M" : state.exposureMode === "lock" ? "AE-L" : "AUTO";
   $("focusReadout").textContent = state.focusMode === "manual" ? "MF" : state.focusMode === "lock" ? "AF-L" : "AF";
@@ -278,6 +280,7 @@ function resetDisconnectedUI() {
   $("previewImage").removeAttribute("src");
   $("viewport").classList.remove("live");
   $("liveLabel").textContent = "OFFLINE";
+  $("streamFPS").textContent = "— fps";
   $("liveLabel").parentElement.classList.remove("on");
   $("previewButton").textContent = "Iniciar retorno";
   stopPolling();
@@ -323,8 +326,10 @@ async function refreshSystemStatus() {
     if ([...select.options].some((option) => option.value === previous)) select.value = previous;
   }
   select.dataset.ffmpeg = status.ffmpegAvailable ? "true" : "false";
-  select.disabled = runtime.virtualCamera || !status.ffmpegAvailable || !status.virtualCameras.length;
+  select.dataset.zscale = status.ffmpegZscaleAvailable ? "true" : "false";
+  select.disabled = runtime.virtualCamera || !status.ffmpegAvailable || !status.ffmpegZscaleAvailable || !status.virtualCameras.length;
   if (!status.ffmpegAvailable) $("virtualCameraHint").textContent = "FFmpeg não foi encontrado no PATH.";
+  else if (!status.ffmpegZscaleAvailable) $("virtualCameraHint").textContent = "O FFmpeg instalado não inclui o filtro zscale.";
   else if (!status.virtualCameras.length) $("virtualCameraHint").textContent = "Carregue o módulo v4l2loopback para criar /dev/video*.";
   else $("virtualCameraHint").textContent = "Disponível para OBS, Meet e outros aplicativos.";
   updateVirtualCameraUI();
@@ -336,8 +341,10 @@ function updateVirtualCameraUI() {
   $("virtualCameraStatus").textContent = runtime.virtualCamera ? `Transmitindo em ${select.value}` : "Saída desativada";
   button.textContent = runtime.virtualCamera ? "Parar câmera virtual" : "Transmitir para o Linux";
   button.classList.toggle("danger", runtime.virtualCamera);
-  button.disabled = !runtime.virtualCamera && (!runtime.connected || !runtime.preview || !select.value || select.dataset.ffmpeg !== "true");
-  select.disabled = runtime.virtualCamera || !runtime.connected || !select.value || select.dataset.ffmpeg !== "true";
+  button.disabled = !runtime.virtualCamera && (!runtime.connected || !runtime.preview || !select.value ||
+    select.dataset.ffmpeg !== "true" || select.dataset.zscale !== "true");
+  select.disabled = runtime.virtualCamera || !runtime.connected || !select.value ||
+    select.dataset.ffmpeg !== "true" || select.dataset.zscale !== "true";
 }
 
 async function startPreview() {
@@ -366,6 +373,7 @@ async function stopPreview() {
   $("previewImage").removeAttribute("src");
   $("viewport").classList.remove("live");
   $("liveLabel").textContent = "OFFLINE";
+  $("streamFPS").textContent = "— fps";
   $("liveLabel").parentElement.classList.remove("on");
   $("previewButton").textContent = "Iniciar retorno";
   updateVirtualCameraUI();

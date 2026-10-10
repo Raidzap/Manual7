@@ -3,16 +3,30 @@
 #import <errno.h>
 #import <fcntl.h>
 #import <netinet/in.h>
+#import <netinet/tcp.h>
 #import <poll.h>
 #import <string.h>
 #import <sys/socket.h>
 #import <sys/stat.h>
+#import <sys/time.h>
 #import <sys/un.h>
 #import <unistd.h>
 
 static const void *M7WebcamSendQueueKey = &M7WebcamSendQueueKey;
 static const int M7WebcamBridgeConnectTimeoutMilliseconds = 250;
 static const char M7WebcamBridgeActivation[] = "M7-BRIDGE-CLIENT-1\n";
+static const NSUInteger M7WebcamTargetFPS = 30;
+static const double M7WebcamJPEGQuality = .68;
+
+static void M7WebcamTuneSocket(int socketFD) {
+    int enabled = 1;
+    int bufferSize = 256 * 1024;
+    setsockopt(socketFD, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
+    setsockopt(socketFD, SOL_SOCKET, SO_SNDBUF, &bufferSize, sizeof(bufferSize));
+    setsockopt(socketFD, SOL_SOCKET, SO_RCVBUF, &bufferSize, sizeof(bufferSize));
+    struct timeval timeout = {.tv_sec = 1, .tv_usec = 0};
+    setsockopt(socketFD, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+}
 
 static int M7WebcamConnectLoopback(int socketFD, const struct sockaddr_in *address) {
     int flags = fcntl(socketFD, F_GETFL, 0);
@@ -78,6 +92,14 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
 @property (nonatomic) NSMutableSet<NSNumber *> *pendingBridgeSockets;
 @property (nonatomic) BOOL ownsSocketPath;
 @property (nonatomic) NSString *transport;
+@property (nonatomic) BOOL sendInProgress;
+@property (nonatomic) NSData *pendingJPEG;
+@property (nonatomic) NSUInteger pendingWidth;
+@property (nonatomic) NSUInteger pendingHeight;
+@property (nonatomic) NSUInteger framesSubmitted;
+@property (nonatomic) NSUInteger framesCoalesced;
+@property (nonatomic) NSUInteger lastFrameBytes;
+@property (nonatomic) NSTimeInterval firstFrameAt;
 @end
 
 @implementation M7WebcamServer
@@ -122,6 +144,7 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
     int enabled = 1;
     setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
 #endif
+    M7WebcamTuneSocket(client);
     struct sockaddr_in address = {0};
 #if defined(__APPLE__)
     address.sin_len = sizeof(address);
@@ -198,6 +221,11 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
 - (BOOL)start:(NSError **)error {
     @synchronized (self) {
         if (self.running) return YES;
+        self.clientsAccepted = 0; self.clientsRejected = 0; self.clientsDropped = 0;
+        self.framesSubmitted = 0; self.framesPublished = 0; self.framesCoalesced = 0;
+        self.bytesPublished = 0; self.lastWidth = 0; self.lastHeight = 0;
+        self.lastFrameBytes = 0; self.firstFrameAt = 0; self.lastFrameAt = 0;
+        self.sendInProgress = NO; self.pendingJPEG = nil;
         if (self.bridgePort) return [self startBridge:error];
         const char *path = self.path.fileSystemRepresentation;
         if (!path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
@@ -314,26 +342,61 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
 
 - (void)publishJPEG:(NSData *)jpeg width:(NSUInteger)width height:(NSUInteger)height {
     if (!jpeg.length) return;
-    dispatch_async(self.sendQueue, ^{
-        NSArray<NSNumber *> *clients = nil;
-        @synchronized (self) { clients = self.clients.allObjects; }
-        if (!clients.count) return;
-        NSString *head = [NSString stringWithFormat:
-            @"--m7frame\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\nX-Width: %lu\r\nX-Height: %lu\r\n\r\n",
-            (unsigned long)jpeg.length, (unsigned long)width, (unsigned long)height];
-        NSMutableData *frame = [[head dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
-        [frame appendData:jpeg]; [frame appendBytes:"\r\n" length:2];
-        NSUInteger delivered = 0;
-        for (NSNumber *number in clients) {
-            int client = number.intValue;
-            if (M7WebcamSendAll(client, frame)) { ++delivered; continue; }
-            shutdown(client, SHUT_RDWR); close(client);
-            @synchronized (self) { [self.clients removeObject:number]; ++self.clientsDropped; }
+    @synchronized (self) {
+        if (!self.running || !self.clients.count) return;
+        ++self.framesSubmitted;
+        if (self.sendInProgress) {
+            self.pendingJPEG = jpeg;
+            self.pendingWidth = width;
+            self.pendingHeight = height;
+            ++self.framesCoalesced;
+            return;
         }
-        if (delivered) @synchronized (self) {
-            ++self.framesPublished; self.bytesPublished += jpeg.length * delivered;
-            self.lastWidth = width; self.lastHeight = height;
-            self.lastFrameAt = NSDate.date.timeIntervalSince1970;
+        self.sendInProgress = YES;
+    }
+    dispatch_async(self.sendQueue, ^{
+        NSData *currentJPEG = jpeg;
+        NSUInteger currentWidth = width, currentHeight = height;
+        while (currentJPEG.length) {
+            NSArray<NSNumber *> *clients = nil;
+            BOOL running = NO;
+            @synchronized (self) {
+                running = self.running;
+                clients = self.clients.allObjects;
+            }
+            if (!running || !clients.count) {
+                @synchronized (self) {
+                    self.pendingJPEG = nil; self.sendInProgress = NO;
+                }
+                break;
+            }
+            NSString *head = [NSString stringWithFormat:
+                @"--m7frame\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\nX-Width: %lu\r\nX-Height: %lu\r\nX-Timestamp: %.6f\r\n\r\n",
+                (unsigned long)currentJPEG.length, (unsigned long)currentWidth,
+                (unsigned long)currentHeight, NSDate.date.timeIntervalSince1970];
+            NSMutableData *frame = [[head dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+            [frame appendData:currentJPEG]; [frame appendBytes:"\r\n" length:2];
+            NSUInteger delivered = 0;
+            for (NSNumber *number in clients) {
+                int client = number.intValue;
+                if (M7WebcamSendAll(client, frame)) { ++delivered; continue; }
+                shutdown(client, SHUT_RDWR); close(client);
+                @synchronized (self) { [self.clients removeObject:number]; ++self.clientsDropped; }
+            }
+            if (delivered) @synchronized (self) {
+                NSTimeInterval timestamp = NSDate.date.timeIntervalSince1970;
+                if (!self.firstFrameAt) self.firstFrameAt = timestamp;
+                ++self.framesPublished; self.bytesPublished += currentJPEG.length * delivered;
+                self.lastWidth = currentWidth; self.lastHeight = currentHeight;
+                self.lastFrameBytes = currentJPEG.length;
+                self.lastFrameAt = timestamp;
+            }
+            @synchronized (self) {
+                currentJPEG = self.pendingJPEG;
+                currentWidth = self.pendingWidth; currentHeight = self.pendingHeight;
+                self.pendingJPEG = nil; self.pendingWidth = 0; self.pendingHeight = 0;
+                if (!currentJPEG.length) self.sendInProgress = NO;
+            }
         }
     });
 }
@@ -343,6 +406,7 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
     @synchronized (self) {
         if (!self.running && self.listeningSocket < 0 && self.pendingBridgeSockets.count == 0) return;
         self.running = NO; ++self.generation; server = self.listeningSocket; self.listeningSocket = -1;
+        self.pendingJPEG = nil; self.pendingWidth = 0; self.pendingHeight = 0;
         for (NSNumber *number in self.pendingBridgeSockets) shutdown(number.intValue, SHUT_RDWR);
         [self.pendingBridgeSockets removeAllObjects];
     }
@@ -364,15 +428,21 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
 - (NSDictionary *)snapshot {
     @synchronized (self) {
         struct stat info = {0}; BOOL exists = lstat(self.path.fileSystemRepresentation, &info) == 0;
+        NSTimeInterval duration = self.framesPublished > 1 ? self.lastFrameAt - self.firstFrameAt : 0;
+        double effectiveFPS = duration > 0 ? (self.framesPublished - 1) / duration : 0;
         return @{ @"running":@(self.running), @"transport":self.transport ?: @"",
             @"unixSocketPath":self.path, @"unixSocketExists":@(exists),
             @"unixSocketPermissions":exists ? [NSString stringWithFormat:@"%04o",
                 (unsigned int)(info.st_mode & 0777)] : @"",
             @"clientCount":@(self.clients.count), @"clientsAccepted":@(self.clientsAccepted),
             @"clientsRejected":@(self.clientsRejected), @"clientsDropped":@(self.clientsDropped),
-            @"framesPublished":@(self.framesPublished), @"bytesPublished":@(self.bytesPublished),
+            @"framesSubmitted":@(self.framesSubmitted), @"framesPublished":@(self.framesPublished),
+            @"framesCoalesced":@(self.framesCoalesced), @"bytesPublished":@(self.bytesPublished),
             @"lastWidth":@(self.lastWidth), @"lastHeight":@(self.lastHeight),
-            @"targetFPS":@10, @"jpegQuality":@.72, @"startedAt":@(self.startedAt),
+            @"lastFrameBytes":@(self.lastFrameBytes), @"effectiveFPS":@(effectiveFPS),
+            @"sendInProgress":@(self.sendInProgress), @"pendingLatestFrame":@(self.pendingJPEG != nil),
+            @"maxPendingFrames":@1,
+            @"targetFPS":@(M7WebcamTargetFPS), @"jpegQuality":@(M7WebcamJPEGQuality), @"startedAt":@(self.startedAt),
             @"lastFrameAt":@(self.lastFrameAt), @"pinRequired":@YES,
             @"bridgePort":@(self.bridgePort),
             @"pendingBridgeWorkers":@(self.pendingBridgeSockets.count) };

@@ -21,7 +21,7 @@ SPEC.loader.exec_module(PAIR)
 class PairingCLITests(unittest.TestCase):
     def payload(self):
         return {
-            "version": "0.7.4",
+            "version": "0.7.5",
             "pin": "123456",
             "preferredSSHPort": 22,
             "availableSSHPorts": [22, 2222],

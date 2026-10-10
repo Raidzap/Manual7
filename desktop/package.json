@@ -1,6 +1,6 @@
 {
   "name": "manual7-studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interface Linux para pareamento, preview e controle remoto do Manual7",
   "author": "Manual7 contributors",
   "desktopName": "manual7-studio.desktop",

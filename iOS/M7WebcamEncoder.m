@@ -2,6 +2,9 @@
 #import <CoreImage/CoreImage.h>
 #import <ImageIO/ImageIO.h>
 
+const NSUInteger M7WebcamTargetFPS = 30;
+const CGFloat M7WebcamJPEGQuality = .68;
+
 static CGFloat M7WebcamClamp(CGFloat value, CGFloat lower, CGFloat upper) {
     return MIN(upper, MAX(lower, value));
 }
@@ -30,7 +33,8 @@ CGRect M7WebcamCropRect(CGSize source, CGSize target, CGPoint center) {
 
 - (instancetype)init {
     if ((self = [super init]))
-        _context = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@NO}];
+        _context = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@NO,
+            kCIContextCacheIntermediates:@NO}];
     return self;
 }
 
@@ -57,27 +61,13 @@ CGRect M7WebcamCropRect(CGSize source, CGSize target, CGPoint center) {
         target.width/crop.size.width, target.height/crop.size.height)];
     CGRect output = CGRectMake(0, 0, target.width, target.height);
     CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGImageRef cg = [self.context createCGImage:image fromRect:output format:kCIFormatRGBA8
-        colorSpace:colorSpace];
+    NSData *data = [self.context JPEGRepresentationOfImage:[image imageByCroppingToRect:output]
+        colorSpace:colorSpace options:@{
+            (id)kCGImageDestinationLossyCompressionQuality:@(M7WebcamJPEGQuality) }];
     CGColorSpaceRelease(colorSpace);
-    if (!cg) {
+    if (!data.length) {
         if (error) *error = [NSError errorWithDomain:@"Manual7.WebcamEncoder" code:3
-            userInfo:@{NSLocalizedDescriptionKey:@"Core Image não produziu o frame da webcam."}];
-        return nil;
-    }
-    NSMutableData *data = [NSMutableData new];
-    CGImageDestinationRef destination = CGImageDestinationCreateWithData(
-        (__bridge CFMutableDataRef)data, CFSTR("public.jpeg"), 1, NULL);
-    if (destination) {
-        CGImageDestinationAddImage(destination, cg, (__bridge CFDictionaryRef)@{
-            (id)kCGImageDestinationLossyCompressionQuality:@.72});
-    }
-    BOOL finalized = destination && CGImageDestinationFinalize(destination);
-    if (destination) CFRelease(destination);
-    CGImageRelease(cg);
-    if (!finalized || !data.length) {
-        if (error) *error = [NSError errorWithDomain:@"Manual7.WebcamEncoder" code:4
-            userInfo:@{NSLocalizedDescriptionKey:@"ImageIO não codificou o JPEG da webcam."}];
+            userInfo:@{NSLocalizedDescriptionKey:@"Core Image não codificou o JPEG da webcam."}];
         return nil;
     }
     return data;

@@ -144,7 +144,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (atomic) BOOL webcamEncoding;
 @property (atomic) BOOL webcamVertical;
 @property (atomic) BOOL webcamRequested;
+@property (atomic) NSUInteger webcamInputFrames;
+@property (atomic) NSUInteger webcamEncodedFrames;
 @property (atomic) NSUInteger webcamBusyDrops;
+@property (atomic) double webcamEncodeMillisecondsTotal;
+@property (atomic) double webcamLastEncodeMilliseconds;
 @property (atomic) BOOL pairingScanning;
 @property (atomic) BOOL pairingAnalyzing;
 @property (atomic) BOOL pairingSubmitting;
@@ -752,7 +756,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.4", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.5", @"state":state });
             }];
         });
         return;
@@ -780,6 +784,10 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *text = [value isKindOfClass:NSString.class] ? [value lowercaseString] : @"";
     NSNumber *number = [value isKindOfClass:NSNumber.class] ? value : nil;
     if ([control isEqual:@"captureMode"]) {
+        if (self.webcamRequested || self.webcamEnabled) {
+            if (error) *error = @"Pare a webcam antes de trocar entre Foto e Vídeo.";
+            return nil;
+        }
         if (!self.captureMode.enabled) { if (error) *error = @"A troca Foto/Vídeo está bloqueada."; return nil; }
         NSInteger index = [text isEqual:@"photo"] ? 0 : [text isEqual:@"video"] ? 1 : -1;
         if (index < 0) { if (error) *error = @"captureMode aceita photo ou video."; return nil; }
@@ -957,7 +965,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     }
     if ([command isEqual:@"webcam.start"] || [command isEqual:@"webcam.stop"]) {
         BOOL start = [command isEqual:@"webcam.start"];
-        if (start && (!self.configured || self.closing || self.captureBusy || self.comparisonActive)) {
+        if (start && (!self.configured || self.closing || self.captureBusy || self.comparisonActive ||
+            self.videoRecording || self.videoProcessing || self.pendingPhoto)) {
             completion(409, @{ @"ok":@NO,
                 @"error":@"A sessão da câmera não está livre para iniciar a webcam." });
             return;
@@ -966,7 +975,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         self.webcamSwitch.on = start;
         if (changed) [self changeWebcam];
         completion(202, @{ @"ok":@YES, @"accepted":@YES, @"command":command,
-            @"changed":@(changed), @"format":self.webcamVertical ? @"vertical" : @"horizontal" });
+            @"changed":@(changed), @"captureMode":start ? @"video" :
+                (self.videoModeActive ? @"video" : @"photo"),
+            @"format":self.webcamVertical ? @"vertical" : @"horizontal" });
         return;
     }
     if ([command isEqual:@"photo.retry"] || [command isEqual:@"videos.retry"]) {
@@ -1007,7 +1018,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.4";
+    self.captureTrace[@"version"] = @"0.7.5";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1174,7 +1185,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
     diagnostic[@"rawCompatibility"] = rawCompatibility;
-    diagnostic[@"version"] = @"0.7.4";
+    diagnostic[@"version"] = @"0.7.5";
     self.lensDiagnostic = diagnostic;
     [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
@@ -1373,13 +1384,20 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         lastError = self.lastWebcamError ?: @{};
     });
     BOOL vertical = self.webcamVertical;
+    double averageEncodeMilliseconds = self.webcamEncodedFrames ?
+        self.webcamEncodeMillisecondsTotal / self.webcamEncodedFrames : 0;
     return @{ @"requested":@(self.webcamRequested), @"enabled":@(self.webcamEnabled),
         @"encoding":@(self.webcamEncoding),
         @"format":vertical ? @"vertical" : @"horizontal",
         @"width":vertical ? @720 : @1280, @"height":vertical ? @1280 : @720,
-        @"fps":@10, @"jpegQuality":@.72, @"videoOnly":@YES,
+        @"targetFPS":@(M7WebcamTargetFPS), @"jpegQuality":@(M7WebcamJPEGQuality), @"videoOnly":@YES,
+        @"captureModeRequired":@"video", @"captureModeActive":@(self.videoModeActive),
         @"usesCameraControls":@YES, @"trackingReframe":@(self.trackingEnabled),
-        @"busyDrops":@(self.webcamBusyDrops), @"lastError":lastError, @"server":server };
+        @"inputFrames":@(self.webcamInputFrames), @"encodedFrames":@(self.webcamEncodedFrames),
+        @"busyDrops":@(self.webcamBusyDrops),
+        @"lastEncodeMilliseconds":@(self.webcamLastEncodeMilliseconds),
+        @"averageEncodeMilliseconds":@(averageEncodeMilliseconds),
+        @"lastError":lastError, @"server":server };
 }
 
 - (void)changeWebcamFormat {
@@ -1395,6 +1413,61 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         vertical ? @"9:16" : @"16:9"]];
 }
 
+- (void)failWebcamStartOnSessionQueue:(NSString *)reason error:(NSError *)error {
+    self.webcamRequested = NO; self.webcamEnabled = NO;
+    self.lastWebcamError = error ? M7ErrorDetails(error) : @{};
+    [self recordSessionEvent:@"webcamStartFailed" details:@{
+        @"reason":reason ?: @"unknown", @"error":M7ErrorDetails(error),
+        @"captureMode":self.videoModeActive ? @"video" : @"photo",
+        @"session":[self sessionDiagnostic] }];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.webcamSwitch.on = NO;
+        [self enableControls:self.configured && self.session.isRunning];
+        [self message:[NSString stringWithFormat:@"Webcam indisponível: %@",
+            error.localizedDescription ?: @"o modo Vídeo não ficou pronto"]];
+    });
+}
+
+// sessionQueue only. Starting the socket before Video mode finishes changing the
+// AVCaptureSession leaves the live sample-buffer client attached to old topology.
+- (void)startWebcamServerForActiveVideo {
+    if (!self.webcamRequested) return;
+    BOOL outputReady = self.configured && self.videoModeActive && self.session.isRunning &&
+        [self.session.outputs containsObject:self.videoOutput];
+    if (!outputReady) {
+        [self failWebcamStartOnSessionQueue:@"videoModeOrOutputUnavailable" error:nil];
+        return;
+    }
+    self.webcamInputFrames = 0; self.webcamEncodedFrames = 0; self.webcamBusyDrops = 0;
+    self.webcamEncodeMillisecondsTotal = 0; self.webcamLastEncodeMilliseconds = 0;
+    self.lastWebcamTime = 0;
+    dispatch_async(self.webcamQueue, ^{
+        if (!self.webcamRequested) return;
+        NSError *error = nil;
+        BOOL ready = [self.webcamServer start:&error];
+        if (ready && !self.webcamRequested) { [self.webcamServer stop]; ready = NO; }
+        NSDictionary *snapshot = self.webcamServer.snapshot ?: @{};
+        self.lastWebcamError = error ? M7ErrorDetails(error) : @{};
+        if (!ready) self.webcamRequested = NO;
+        self.webcamEnabled = ready;
+        dispatch_async(self.sessionQueue, ^{
+            [self recordSessionEvent:ready ? @"webcamStarted" : @"webcamStartFailed"
+                details:@{ @"server":snapshot, @"error":M7ErrorDetails(error),
+                    @"captureMode":self.videoModeActive ? @"video" : @"photo",
+                    @"targetFPS":@(M7WebcamTargetFPS),
+                    @"format":self.webcamVertical ? @"vertical" : @"horizontal" }];
+        });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!self.webcamRequested) return;
+            self.webcamSwitch.on = ready;
+            [self enableControls:self.configured && self.session.isRunning];
+            [self message:ready ? @"Webcam pronta em modo Vídeo a até 30 fps." :
+                [NSString stringWithFormat:@"Webcam indisponível: %@",
+                    error.localizedDescription ?: @"erro no socket"]];
+        });
+    });
+}
+
 - (void)changeWebcam {
     BOOL enabled = self.webcamSwitch.on;
     self.webcamRequested = enabled;
@@ -1404,7 +1477,10 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             [self.webcamServer stop];
             NSDictionary *snapshot = self.webcamServer.snapshot ?: @{};
             dispatch_async(self.sessionQueue, ^{
-                [self recordSessionEvent:@"webcamStopped" details:@{ @"server":snapshot }];
+                [self recordSessionEvent:@"webcamStopped" details:@{
+                    @"server":snapshot, @"inputFrames":@(self.webcamInputFrames),
+                    @"encodedFrames":@(self.webcamEncodedFrames),
+                    @"busyDrops":@(self.webcamBusyDrops) }];
             });
             dispatch_async(dispatch_get_main_queue(), ^{ [self message:@"Webcam desligada."]; });
         });
@@ -1413,65 +1489,46 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.webcamSwitch.enabled = NO;
     dispatch_async(self.sessionQueue, ^{
         if (!self.webcamRequested) return;
-        BOOL outputReady = self.configured && [self.session.outputs containsObject:self.videoOutput];
-        if (!outputReady && !self.videoModeActive && !self.closing)
-            outputReady = [self configurePeakingOutput:YES];
-        if (!outputReady) {
-            self.webcamRequested = NO;
-            [self recordSessionEvent:@"webcamStartFailed" details:@{
-                @"reason":@"videoOutputUnavailable", @"session":[self sessionDiagnostic] }];
+        if (!self.videoModeActive) {
+            [self recordSessionEvent:@"webcamVideoModeRequested" details:@{
+                @"previousCaptureMode":@"photo", @"targetFPS":@(M7WebcamTargetFPS) }];
             dispatch_async(dispatch_get_main_queue(), ^{
-                self.webcamEnabled = NO; self.webcamSwitch.on = NO;
-                [self enableControls:self.configured && self.session.isRunning];
-                [self message:@"Webcam indisponível: a saída de vídeo não está ativa."];
+                self.captureMode.selectedSegmentIndex = 1;
+                self.rawRow.hidden = YES; self.sizeRow.hidden = YES;
+                self.videoFormatRow.hidden = NO; self.trackingRow.hidden = NO;
+                [self updateReframeGuide]; [self enableControls:NO];
+                [self message:@"Preparando modo Vídeo para a webcam…"];
             });
+            [self configureSessionForVideo:YES];
             return;
         }
-        dispatch_async(self.webcamQueue, ^{
-            if (!self.webcamRequested) return;
-            NSError *error = nil;
-            BOOL ready = [self.webcamServer start:&error];
-            if (ready && !self.webcamRequested) { [self.webcamServer stop]; ready = NO; }
-            NSDictionary *snapshot = self.webcamServer.snapshot ?: @{};
-            self.lastWebcamError = error ? M7ErrorDetails(error) : @{};
-            if (!ready) self.webcamRequested = NO;
-            self.webcamEnabled = ready;
-            dispatch_async(self.sessionQueue, ^{
-                [self recordSessionEvent:ready ? @"webcamStarted" : @"webcamStartFailed"
-                    details:@{ @"server":snapshot, @"error":M7ErrorDetails(error),
-                        @"format":self.webcamVertical ? @"vertical" : @"horizontal" }];
-            });
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!self.webcamRequested) return;
-                self.webcamSwitch.on = ready;
-                [self enableControls:self.configured && self.session.isRunning];
-                [self message:ready ? @"Webcam pronta; conecte o cliente Linux pelo SSH." :
-                    [NSString stringWithFormat:@"Webcam indisponível: %@",
-                        error.localizedDescription ?: @"erro no socket"]];
-            });
-        });
+        [self startWebcamServerForActiveVideo];
     });
 }
 
 - (void)scheduleWebcamForSampleBuffer:(CMSampleBufferRef)sample {
     if (!self.webcamEnabled || self.webcamServer.clientCount == 0) return;
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - self.lastWebcamTime < .1) return;
+    ++self.webcamInputFrames;
     if (self.webcamEncoding) { ++self.webcamBusyDrops; return; }
     CVPixelBufferRef pixel = CMSampleBufferGetImageBuffer(sample);
     if (!pixel) return;
-    self.lastWebcamTime = now; self.webcamEncoding = YES;
+    self.lastWebcamTime = CACurrentMediaTime(); self.webcamEncoding = YES;
     BOOL vertical = self.webcamVertical;
     CGPoint center = self.trackingEnabled ? self.trackingCenter : CGPointMake(.5, .5);
     CVPixelBufferRetain(pixel);
     dispatch_async(self.webcamQueue, ^{
         @autoreleasepool {
+            CFTimeInterval encodeStarted = CACurrentMediaTime();
             NSError *error = nil;
             NSData *jpeg = [self.webcamEncoder JPEGDataForPixelBuffer:pixel vertical:vertical
                 normalizedCenter:center error:&error];
             CVPixelBufferRelease(pixel);
+            double encodeMilliseconds = (CACurrentMediaTime() - encodeStarted) * 1000.0;
+            self.webcamLastEncodeMilliseconds = encodeMilliseconds;
             if (jpeg.length && self.webcamEnabled) {
                 self.lastWebcamError = @{};
+                ++self.webcamEncodedFrames;
+                self.webcamEncodeMillisecondsTotal += encodeMilliseconds;
                 [self.webcamServer publishJPEG:jpeg width:vertical ? 720 : 1280
                     height:vertical ? 1280 : 720];
             } else if (error) {
@@ -1490,6 +1547,15 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)changeCaptureMode {
+    if (self.webcamRequested || self.webcamEnabled) {
+        self.captureMode.selectedSegmentIndex = 1;
+        dispatch_async(self.sessionQueue, ^{
+            [self recordSessionEvent:@"captureModeChangeBlocked" details:@{
+                @"reason":@"webcamActive", @"requested":@"photo" }];
+        });
+        [self message:@"Pare a webcam antes de voltar ao modo Foto."];
+        return;
+    }
     BOOL video = self.captureMode.selectedSegmentIndex == 1;
     self.rawRow.hidden = video;
     self.sizeRow.hidden = video;
@@ -1504,6 +1570,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 // sessionQueue only. The same physical camera and manual controls are reused.
 - (void)configureSessionForVideo:(BOOL)video {
     if (self.captureBusy || self.comparisonActive || self.videoRecording || self.videoProcessing || self.pendingPhoto || self.closing) {
+        if (self.webcamRequested)
+            [self failWebcamStartOnSessionQueue:@"captureTopologyBusy" error:nil];
         [self message:@"Aguarde a operação atual antes de trocar o modo."];
         dispatch_async(dispatch_get_main_queue(), ^{
             BOOL activeVideo = self.videoModeActive;
@@ -1579,11 +1647,15 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"session":[self sessionDiagnostic]}];
     if (!selected && video) {
         self.videoModeActive = NO;
+        if (self.webcamRequested)
+            [self failWebcamStartOnSessionQueue:@"videoModeConfigurationFailed" error:error];
         [self message:[NSString stringWithFormat:@"Falha ao configurar vídeo: %@. Restaurando Foto…",
             error.localizedDescription ?: @"erro desconhecido"]];
         [self configureSessionForVideo:NO];
         return;
     }
+    if (selected && video && self.webcamRequested && !self.webcamEnabled)
+        [self startWebcamServerForActiveVideo];
     dispatch_async(dispatch_get_main_queue(), ^{
         self.captureMode.selectedSegmentIndex = selected && video ? 1 : 0;
         self.rawRow.hidden = selected && video;
@@ -1602,7 +1674,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 - (void)enableControls:(BOOL)ready {
     self.captureAvailable = ready;
     BOOL changingTopology = self.videoRecording || self.videoProcessing;
-    self.captureMode.enabled = ready && !changingTopology;
+    self.captureMode.enabled = ready && !changingTopology && !self.webcamRequested && !self.webcamEnabled;
     self.videoFormat.enabled = ready && self.videoModeActive && !changingTopology;
     self.trackingSwitch.enabled = ready && self.videoModeActive && !changingTopology;
     self.webcamSwitch.enabled = ready && !changingTopology;
@@ -1829,7 +1901,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.4";
+    self.videoTrace[@"version"] = @"0.7.5";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -2540,7 +2612,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.4", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.5", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
@@ -2569,7 +2641,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.4", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.5", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -2617,7 +2689,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.4" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.5" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];

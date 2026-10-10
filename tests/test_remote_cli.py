@@ -109,6 +109,10 @@ class RemoteCLITests(unittest.TestCase):
         self.assertEqual(command[0], "/usr/bin/ffmpeg")
         self.assertIn("X-Manual7-PIN: 246810\r\n", command)
         self.assertIn("mpjpeg", command)
+        self.assertIn("zscale=iw:ih:in_range=full:out_range=limited:filter=bilinear,format=yuv420p", command)
+        self.assertIn("-use_wallclock_as_timestamps", command)
+        self.assertIn("passthrough", command)
+        self.assertNotIn("10", command)
         self.assertEqual(command[-2:], ["v4l2", "/dev/video10"])
 
     def test_tunnel_opens_api_and_webcam_forwards(self):

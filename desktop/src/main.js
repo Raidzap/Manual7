@@ -81,6 +81,23 @@ async function executableOnPath(name) {
   return "";
 }
 
+function executableSupportsFilter(executable, filter) {
+  if (!executable) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const child = spawn(executable, ["-hide_banner", "-filters"], {
+      stdio: ["ignore", "pipe", "ignore"], windowsHide: true
+    });
+    let output = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 3000);
+    child.stdout.on("data", (chunk) => { output = `${output}${chunk}`.slice(-1024 * 1024); });
+    child.once("error", () => { clearTimeout(timer); resolve(false); });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 && new RegExp(`\\b${filter}\\b`).test(output));
+    });
+  });
+}
+
 async function virtualCameraDevices() {
   let names = [];
   try { names = await fs.readdir("/dev"); } catch { return []; }
@@ -292,6 +309,8 @@ class Manual7Session {
   makeForwarder(remotePort) {
     const server = net.createServer((socket) => {
       if (!this.ssh) return socket.destroy();
+      socket.setNoDelay(true);
+      socket.setKeepAlive(true, 10_000);
       this.ssh.forwardOut("127.0.0.1", socket.remotePort || 0, "127.0.0.1", remotePort,
         (error, stream) => {
           if (error) return socket.destroy(error);
@@ -393,7 +412,22 @@ class Manual7Session {
     try { await this.command("webcam.stop"); } catch { /* already stopped */ }
     await this.command("set", { control: "webcamFormat", value: selected });
     await this.command("webcam.start");
-    return { ok: true, format: selected, previewUrl: `${this.previewURL()}&reload=${Date.now()}` };
+    const deadline = Date.now() + 20_000;
+    let state = null;
+    while (Date.now() < deadline) {
+      const envelope = await this.apiRequest("GET", "/v1/state");
+      state = envelope.state || envelope;
+      if (state.captureMode === "video" && state.webcam?.enabled && state.webcam?.server?.running) break;
+      if (!state.webcam?.requested && !state.webcam?.enabled) {
+        const detail = state.webcam?.lastError?.message || "O iPhone não conseguiu iniciar a webcam.";
+        throw new Error(detail);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    if (!(state?.captureMode === "video" && state?.webcam?.enabled))
+      throw new Error("O iPhone não confirmou a webcam em modo Vídeo dentro de 20 segundos.");
+    return { ok: true, format: selected, captureMode: state.captureMode,
+      previewUrl: `${this.previewURL()}&reload=${Date.now()}` };
   }
 
   async stopPreview() {
@@ -405,8 +439,10 @@ class Manual7Session {
   }
 
   async systemStatus() {
+    const ffmpeg = await executableOnPath("ffmpeg");
     return {
-      ffmpegAvailable: Boolean(await executableOnPath("ffmpeg")),
+      ffmpegAvailable: Boolean(ffmpeg),
+      ffmpegZscaleAvailable: await executableSupportsFilter(ffmpeg, "zscale"),
       virtualCameras: await virtualCameraDevices(),
       virtualCameraRunning: Boolean(this.ffmpeg)
     };
@@ -420,13 +456,18 @@ class Manual7Session {
       throw new Error("O dispositivo selecionado não foi identificado como v4l2loopback.");
     const ffmpeg = await executableOnPath("ffmpeg");
     if (!ffmpeg) throw new Error("FFmpeg não foi encontrado no PATH deste computador.");
+    if (!(await executableSupportsFilter(ffmpeg, "zscale")))
+      throw new Error("Este FFmpeg não inclui o filtro zscale necessário para converter corretamente a faixa do MJPEG.");
     try { await fs.access(device, fs.constants.W_OK); }
     catch { throw new Error(`Sem permissão de escrita em ${device}. Verifique o grupo video.`); }
     await this.stopVirtualCamera();
     this.ffmpegStopping = false;
     const child = spawn(ffmpeg, [
-      "-hide_banner", "-loglevel", "warning", "-fflags", "nobuffer", "-flags", "low_delay",
-      "-i", this.previewURL(), "-vf", "format=yuv420p", "-f", "v4l2", device
+      "-hide_banner", "-loglevel", "warning", "-fflags", "nobuffer+discardcorrupt", "-flags", "low_delay",
+      "-thread_queue_size", "256", "-use_wallclock_as_timestamps", "1",
+      "-f", "mpjpeg", "-i", this.previewURL(), "-an",
+      "-vf", "zscale=iw:ih:in_range=full:out_range=limited:filter=bilinear,format=yuv420p",
+      "-color_range", "tv", "-fps_mode", "passthrough", "-f", "v4l2", device
     ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     this.ffmpeg = child;
     let stderr = "";

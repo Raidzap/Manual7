@@ -10,7 +10,7 @@ Build Linux: AppImage x86_64 gerado com Electron 44.7.0 e electron-builder 26.15
 Testes locais: 38 testes Python aprovados, 1 conjunto exclusivo de macOS ignorado no Linux; 3 suítes Node aprovadas.
 Smoke test Linux: AppImage abriu, carregou a interface, detectou FFmpeg, filtro zscale e /dev/video10; permaneceu ativo até o encerramento controlado.
 Auditoria npm de produção: 35 dependências, zero vulnerabilidades conhecidas.
-CI macOS: pendente da publicação deste commit.
+CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/38035846130
 Inicialização: API, verificação OpenSSH e reconexões fora da main thread; connect limitado a 250 ms; nenhum fallback síncrono no viewDidLoad.
 Bridge: LaunchDaemon como mobile, workers autenticados, TCP_NODELAY, buffers de 512 KiB, relay em blocos de 64 KiB e endpoints TCP somente em 127.0.0.1:27839/27840.
 Modo da webcam: a ativação seleciona Vídeo e termina a configuração da AVCaptureSession antes de abrir o servidor; a troca para Foto fica bloqueada enquanto a webcam estiver ativa.

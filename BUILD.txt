@@ -1,4 +1,4 @@
-Manual7 0.7.5 / Manual7 Studio 0.1.1 — registro de build
+Manual7 0.7.5 / Manual7 Studio 0.1.2 — registro de build
 Data local: 2026-10-10
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
@@ -9,6 +9,7 @@ Build móvel: compilado, vinculado e assinado pelo Theos, sem diagnósticos do c
 Build Linux: AppImage x86_64 gerado com Electron 44.7.0 e electron-builder 26.15.3.
 Testes locais: 38 testes Python aprovados, 1 conjunto exclusivo de macOS ignorado no Linux; 3 suítes Node aprovadas.
 Smoke test Linux: AppImage abriu, carregou a interface, detectou FFmpeg, filtro zscale e /dev/video10; permaneceu ativo até o encerramento controlado.
+Orientação no Studio: escolha do retorno enviada imediatamente; polling não sobrescreve a seleção; início exige formato e dimensões confirmados; Reframe da gravação permanece independente.
 Auditoria npm de produção: 35 dependências, zero vulnerabilidades conhecidas.
 CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/38035846130
 Inicialização: API, verificação OpenSSH e reconexões fora da main thread; connect limitado a 250 ms; nenhum fallback síncrono no viewDidLoad.
@@ -24,4 +25,4 @@ Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe
 Vídeo/Reframe: master H.264 4:3 a 30 fps, AAC quando disponível, exportação 1920x1080, 1080x1920 ou ambas, central ou rastreada.
 Validação física pendente: medir effectiveFPS, averageEncodeMilliseconds e framesCoalesced no iPhone 7 Plus durante uma sessão longa de webcam.
 SHA-256 do .deb: 2ab2a7adb2cb5090eb0fc3fbfb08f9be6149346a2b89477ff114436e7f74d290
-SHA-256 do AppImage: d82d0b6b11fda54d497a9e56ea6f30e1c36a4bd838618ff02a4010cc2b90dc0c
+SHA-256 do AppImage: 56dc4eef380b871372b2c2e7171b721b116f59d2f7f3f41bba63cca79317b369

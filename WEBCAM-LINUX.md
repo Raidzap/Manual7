@@ -4,6 +4,8 @@ O Manual7 0.7.5 transmite o mesmo `AVCaptureVideoDataOutput` usado pelo visor e 
 
 Ativar a webcam muda o M7 para Vídeo antes de abrir o stream. O controle Foto/Vídeo fica bloqueado até a webcam ser desligada. Sob pressão do encoder ou da rede, o M7 conserva somente o frame mais recente: a imagem pode ter atraso de transporte, mas a fila não cresce indefinidamente. O diagnóstico separa frames recebidos, codificados, publicados e substituídos.
 
+No Manual7 Studio 0.1.2, selecione **Horizontal 16:9** ou **Vertical 9:16** em **Formato do retorno** antes de iniciar. Essa escolha controla o visor e o `v4l2loopback`. O seletor **Formato da gravação (Reframe)** é independente e controla os arquivos salvos no iPhone.
+
 O fluxo permanece dentro do SSH: o bridge escuta apenas em `127.0.0.1:27840` no iPhone e exige o PIN do painel M7 na requisição MJPEG. O pareamento informa a porta ao cliente, que a encaminha para `127.0.0.1:17838`; o FFmpeg lê o MJPEG autenticado e grava em um dispositivo virtual `v4l2loopback`.
 
 Esta primeira versão transmite somente vídeo. O focus peaking continua como guia no visor do iPhone e não é gravado no sinal da webcam. O Reframe da webcam produz um formato por vez; a opção **Ambos** continua disponível para gravações de vídeo locais.

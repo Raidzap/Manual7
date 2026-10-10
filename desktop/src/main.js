@@ -417,16 +417,24 @@ class Manual7Session {
     while (Date.now() < deadline) {
       const envelope = await this.apiRequest("GET", "/v1/state");
       state = envelope.state || envelope;
-      if (state.captureMode === "video" && state.webcam?.enabled && state.webcam?.server?.running) break;
+      const webcamReady = state.captureMode === "video" && state.webcam?.enabled && state.webcam?.server?.running;
+      if (webcamReady && state.webcam?.format !== selected)
+        throw new Error(`O iPhone confirmou ${state.webcam?.format || "formato desconhecido"}, mas foi solicitado ${selected}.`);
+      if (webcamReady) break;
       if (!state.webcam?.requested && !state.webcam?.enabled) {
         const detail = state.webcam?.lastError?.message || "O iPhone não conseguiu iniciar a webcam.";
         throw new Error(detail);
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    if (!(state?.captureMode === "video" && state?.webcam?.enabled))
+    if (!(state?.captureMode === "video" && state?.webcam?.enabled && state?.webcam?.format === selected))
       throw new Error("O iPhone não confirmou a webcam em modo Vídeo dentro de 20 segundos.");
-    return { ok: true, format: selected, captureMode: state.captureMode,
+    const expectedWidth = selected === "vertical" ? 720 : 1280;
+    const expectedHeight = selected === "vertical" ? 1280 : 720;
+    if (Number(state.webcam?.width) !== expectedWidth || Number(state.webcam?.height) !== expectedHeight)
+      throw new Error(`Dimensões inesperadas do iPhone: ${state.webcam?.width || 0} × ${state.webcam?.height || 0}.`);
+    return { ok: true, format: state.webcam.format, width: state.webcam.width,
+      height: state.webcam.height, captureMode: state.captureMode,
       previewUrl: `${this.previewURL()}&reload=${Date.now()}` };
   }
 

@@ -6,7 +6,9 @@ Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o
 
 ## Manual7 Studio para Linux
 
-O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH, visor MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.1](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.1).
+O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH, visor MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.2](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.2).
+
+O Studio 0.1.2 envia imediatamente a escolha **Horizontal 16:9** ou **Vertical 9:16**, impede que a atualização periódica restaure o formato anterior e só abre o visor depois que o iPhone confirma o formato e as dimensões correspondentes. **Formato do retorno** controla a webcam/OBS; **Formato da gravação (Reframe)** controla os vídeos salvos no iPhone.
 
 ## Webcam estável na 0.7.5
 

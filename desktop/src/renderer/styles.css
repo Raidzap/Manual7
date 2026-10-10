@@ -88,6 +88,8 @@ button { color: inherit; }
 .segmented button.selected { color: #13220e; background: var(--lime); box-shadow: 0 3px 12px rgba(185,255,66,.12); }
 .segmented button:disabled { cursor: not-allowed; opacity: .35; }
 .segmented.compact button { min-width: 49px; padding: 7px 9px; }.segmented.wide { display: flex; }.segmented.wide button { flex: 1; min-width: 0; }
+.return-format { display: grid; gap: 5px; }.return-format small { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .1em; }
+.return-format .segmented button { min-width: 112px; }
 
 .control-panel { overflow-y: auto; padding: 20px; scrollbar-color: #28483b transparent; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }.panel-heading b { color: var(--muted); font-size: 11px; }

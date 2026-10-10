@@ -28,9 +28,12 @@
           <h1 id="monitorTitle">Aguardando conexão</h1>
         </div>
         <div class="monitor-actions">
-          <div id="webcamFormat" class="segmented compact" data-control="webcamFormat">
-            <button data-value="horizontal" class="selected">16:9</button>
-            <button data-value="vertical">9:16</button>
+          <div class="return-format">
+            <small>FORMATO DO RETORNO</small>
+            <div id="webcamFormat" class="segmented" data-control="webcamFormat">
+              <button data-value="horizontal" class="selected">Horizontal 16:9</button>
+              <button data-value="vertical">Vertical 9:16</button>
+            </div>
           </div>
           <button id="previewButton" class="button lime" disabled>Iniciar retorno</button>
         </div>
@@ -44,7 +47,7 @@
         </div>
         <img id="previewImage" alt="Retorno ao vivo da câmera do iPhone">
         <div class="safe-frame"></div>
-        <div class="live-chip"><span></span><b id="liveLabel">OFFLINE</b><em id="streamFPS">— fps</em></div>
+        <div class="live-chip"><span></span><b id="liveLabel">OFFLINE</b><em id="streamFormat">16:9</em><em id="streamFPS">— fps</em></div>
         <div class="viewport-footer">
           <div><small>ISO</small><b id="hudISO">—</b></div>
           <div><small>SHUTTER</small><b id="hudShutter">—</b></div>
@@ -129,10 +132,10 @@
             <option value="1600">1600 px</option><option value="1280">1280 px</option>
           </select>
         </label>
-        <label class="select-row" for="videoFormat"><span>Reframe de vídeo</span>
+        <label class="select-row" for="videoFormat"><span>Formato da gravação (Reframe)</span>
           <select id="videoFormat" disabled>
-            <option value="horizontal">16:9</option><option value="vertical">9:16</option>
-            <option value="both">Ambos</option>
+            <option value="horizontal">Horizontal 16:9</option><option value="vertical">Vertical 9:16</option>
+            <option value="both">Ambos os formatos</option>
           </select>
         </label>
         <div class="switch-row">

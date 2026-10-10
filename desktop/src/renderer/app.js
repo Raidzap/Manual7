@@ -12,6 +12,9 @@ const runtime = {
   expiryTimer: null,
   pollTimer: null,
   pollBusy: false,
+  webcamFormatChoice: "horizontal",
+  webcamFormatChanging: false,
+  webcamFormatMismatch: "",
   pendingFingerprint: "",
   phone: null,
   toastTimer: null
@@ -97,7 +100,11 @@ function applyState(envelope) {
   selectSegment("exposureMode", state.exposureMode);
   selectSegment("focusMode", state.focusMode);
   selectSegment("videoFormat", state.videoFormat);
-  selectSegment("webcamFormat", state.webcam?.format || "horizontal");
+  const remoteWebcamFormat = state.webcam?.format === "vertical" ? "vertical" : "horizontal";
+  if (!runtime.webcamFormatChanging) {
+    runtime.webcamFormatChoice = remoteWebcamFormat;
+    selectSegment("webcamFormat", remoteWebcamFormat);
+  }
 
   setSegmentEnabled("captureMode", available.captureMode);
   setSegmentEnabled("lens", available.lens);
@@ -152,6 +159,16 @@ function applyState(envelope) {
   $("hudFocus").textContent = Number.isFinite(Number(actual.focusPosition)) ? Number(actual.focusPosition).toFixed(2) : "—";
   $("hudLens").textContent = state.lens === "tele" ? "2×" : "1×";
   const streamFPS = Number(state.webcam?.server?.effectiveFPS || 0);
+  const publishedWidth = Number(state.webcam?.server?.lastWidth || 0);
+  const publishedHeight = Number(state.webcam?.server?.lastHeight || 0);
+  const publishedFormat = publishedWidth > 0 && publishedHeight > 0
+    ? (publishedHeight > publishedWidth ? "vertical" : "horizontal") : remoteWebcamFormat;
+  $("streamFormat").textContent = publishedFormat === "vertical" ? "9:16" : "16:9";
+  const mismatch = state.webcam?.enabled && publishedWidth > 0 && publishedFormat !== remoteWebcamFormat
+    ? `${remoteWebcamFormat}:${publishedWidth}x${publishedHeight}` : "";
+  if (mismatch && mismatch !== runtime.webcamFormatMismatch)
+    message(`Formato divergente: o iPhone anunciou ${remoteWebcamFormat}, mas publicou ${publishedWidth} × ${publishedHeight}.`, true);
+  runtime.webcamFormatMismatch = mismatch;
   $("streamFPS").textContent = streamFPS > 0 ? `${streamFPS.toFixed(1).replace(".", ",")} fps` : "— fps";
   $("lensValue").textContent = state.lens === "tele" ? "TELEOBJETIVA" : "GRANDE-ANGULAR";
   $("exposureReadout").textContent = state.exposureMode === "manual" ? "M" : state.exposureMode === "lock" ? "AE-L" : "AUTO";
@@ -277,10 +294,15 @@ function resetDisconnectedUI() {
   runtime.connected = false;
   runtime.preview = false;
   runtime.virtualCamera = false;
+  runtime.webcamFormatChoice = "horizontal";
+  runtime.webcamFormatChanging = false;
+  runtime.webcamFormatMismatch = "";
+  selectSegment("webcamFormat", "horizontal");
   $("previewImage").removeAttribute("src");
   $("viewport").classList.remove("live");
   $("liveLabel").textContent = "OFFLINE";
   $("streamFPS").textContent = "— fps";
+  $("streamFormat").textContent = "16:9";
   $("liveLabel").parentElement.classList.remove("on");
   $("previewButton").textContent = "Iniciar retorno";
   stopPolling();
@@ -347,22 +369,29 @@ function updateVirtualCameraUI() {
     select.dataset.ffmpeg !== "true" || select.dataset.zscale !== "true";
 }
 
-async function startPreview() {
+async function startPreview(requestedFormat = "") {
   try {
     $("previewButton").disabled = true;
-    const format = selectedSegment("webcamFormat") || "horizontal";
+    const format = requestedFormat === "vertical" ? "vertical" :
+      requestedFormat === "horizontal" ? "horizontal" :
+        (runtime.webcamFormatChoice || selectedSegment("webcamFormat") || "horizontal");
+    selectSegment("webcamFormat", format);
     const result = await window.manual7.startPreview(format);
+    const confirmedFormat = result.format === "vertical" ? "vertical" : "horizontal";
+    runtime.webcamFormatChoice = confirmedFormat;
+    selectSegment("webcamFormat", confirmedFormat);
     runtime.preview = true;
     runtime.previewURL = result.previewUrl;
     const image = $("previewImage");
     image.src = result.previewUrl;
     $("viewport").classList.add("live");
-    $("viewport").classList.toggle("portrait", format === "vertical");
+    $("viewport").classList.toggle("portrait", confirmedFormat === "vertical");
+    $("streamFormat").textContent = confirmedFormat === "vertical" ? "9:16" : "16:9";
     $("liveLabel").textContent = "AO VIVO";
     $("liveLabel").parentElement.classList.add("on");
     $("previewButton").textContent = "Parar retorno";
     updateVirtualCameraUI();
-    message("Retorno visual iniciado.");
+    message(`Retorno iniciado em ${confirmedFormat === "vertical" ? "Vertical 9:16" : "Horizontal 16:9"}.`);
   } catch (error) { message(error.message, true); }
   finally { $("previewButton").disabled = !runtime.connected; }
 }
@@ -386,15 +415,30 @@ function bindControls() {
       const button = event.target.closest("button[data-value]");
       if (!button || button.disabled) return;
       const previous = selectedSegment(group.id);
-      selectSegment(group.id, button.dataset.value);
+      const next = button.dataset.value;
+      selectSegment(group.id, next);
       if (group.dataset.control === "webcamFormat") {
-        if (runtime.preview) {
-          await stopPreview();
-          await startPreview();
+        runtime.webcamFormatChanging = true;
+        try {
+          const wasPreviewing = runtime.preview;
+          if (wasPreviewing) await stopPreview();
+          await window.manual7.setControl("webcamFormat", next);
+          runtime.webcamFormatChoice = next;
+          if (wasPreviewing) await startPreview(next);
+          else {
+            await pollState();
+            message(`Formato selecionado: ${next === "vertical" ? "Vertical 9:16" : "Horizontal 16:9"}.`);
+          }
+        } catch (error) {
+          runtime.webcamFormatChoice = previous || "horizontal";
+          selectSegment(group.id, runtime.webcamFormatChoice);
+          message(error.message, true);
+        } finally {
+          runtime.webcamFormatChanging = false;
         }
         return;
       }
-      try { await setControl(group.dataset.control, button.dataset.value); }
+      try { await setControl(group.dataset.control, next); }
       catch { selectSegment(group.id, previous); }
     });
   }

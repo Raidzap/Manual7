@@ -10,7 +10,7 @@ Build Linux: AppImage x86_64 gerado com Electron 44.7.0 e electron-builder 26.15
 Testes locais: 44 testes Python aprovados, incluindo os contratos de compilação iOS com THEOS; 4 suítes Node (13 testes) aprovadas.
 Smoke test Linux: AppImage abriu e permaneceu ativo até o encerramento controlado; interface revisada em 1440 e 800 px de largura com dados simulados.
 Auditoria npm de produção: zero vulnerabilidades conhecidas.
-CI macOS: pendente para este commit.
+CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/40221377307 (encoder da webcam em backend videoToolbox, status 0).
 Privacidade: IPv4 aparece como •••.•••.•••.••• no Studio (seletor de rede, diálogo SSH, mensagens) e no iPhone (status e diagnóstico exibido); revelação por clique/toque por 10 s. PIN mascarado na linha Remoto. QR e diagnóstico salvo em arquivo permanecem completos.
 Toque para focar: toque no visor do iPhone ou clique no retorno do Studio (controle remoto focusPoint). Somente AF contínuo e AE AUTO adotam o ponto; escolher AUTO/AF novamente recentraliza.
 Desempenho: polling de /v1/state fora do log de sessão; webcamSnapshot sem dispatch_sync na fila do encoder; refresh pausado com a Câmera inativa e sem reatribuir títulos idênticos; CIContext sem gestão de cor; Studio para de consultar o iPhone com a janela oculta.

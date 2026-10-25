@@ -94,11 +94,47 @@ static BOOL M7Fail(NSError **error, NSString *reason) {
     } @finally { [d unlockForConfiguration]; }
 }
 
+// Choosing AUTO/AF again also returns a tapped point of interest to center.
 - (BOOL)enableAutoExposure:(NSError **)error {
+    AVCaptureDevice *d = self.device;
+    if (d.isExposurePointOfInterestSupported && [d lockForConfiguration:nil]) {
+        d.exposurePointOfInterest = CGPointMake(.5, .5);
+        [d unlockForConfiguration];
+    }
     return [self changeExposureMode:AVCaptureExposureModeContinuousAutoExposure error:error];
 }
 - (BOOL)enableAutoFocus:(NSError **)error {
+    AVCaptureDevice *d = self.device;
+    if (d.isFocusPointOfInterestSupported && [d lockForConfiguration:nil]) {
+        d.focusPointOfInterest = CGPointMake(.5, .5);
+        [d unlockForConfiguration];
+    }
     return [self changeFocusMode:AVCaptureFocusModeContinuousAutoFocus error:error];
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)setPointOfInterest:(CGPoint)point error:(NSError **)error {
+    if (!isfinite(point.x) || !isfinite(point.y) || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) {
+        M7Fail(error, @"O ponto de foco deve estar entre 0 e 1.");
+        return nil;
+    }
+    AVCaptureDevice *d = self.device;
+    if (![d lockForConfiguration:error]) return nil;
+    @try {
+        BOOL focus = d.focusMode == AVCaptureFocusModeContinuousAutoFocus && d.isFocusPointOfInterestSupported;
+        BOOL exposure = d.exposureMode == AVCaptureExposureModeContinuousAutoExposure &&
+            d.isExposurePointOfInterestSupported;
+        if (!focus && !exposure) {
+            M7Fail(error, @"Toque para focar requer foco AF ou exposição AUTO.");
+            return nil;
+        }
+        // A new point takes effect only when the mode is assigned again.
+        if (focus) { d.focusPointOfInterest = point; d.focusMode = AVCaptureFocusModeContinuousAutoFocus; }
+        if (exposure) {
+            d.exposurePointOfInterest = point;
+            d.exposureMode = AVCaptureExposureModeContinuousAutoExposure;
+        }
+        return @{ @"focus":@(focus), @"exposure":@(exposure) };
+    } @finally { [d unlockForConfiguration]; }
 }
 - (BOOL)lockExposure:(NSError **)error {
     return [self changeExposureMode:AVCaptureExposureModeLocked error:error];

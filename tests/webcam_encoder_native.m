@@ -38,6 +38,18 @@ int main(void) {
             CGPointMake(.5, 0));
         AssertNear(horizontalTop.origin.y, 360);
 
+        // Portrait 1440x1920 buffer; device space is the landscape sensor.
+        CGSize portrait = CGSizeMake(1440, 1920);
+        CGPoint middle = M7WebcamDevicePoint(portrait, portrait, CGPointMake(.5, .5), CGPointMake(.5, .5));
+        AssertNear(middle.x, .5); AssertNear(middle.y, .5);
+        CGPoint topLeft = M7WebcamDevicePoint(portrait, portrait, CGPointMake(.5, .5), CGPointMake(0, 0));
+        AssertNear(topLeft.x, 0); AssertNear(topLeft.y, 1);
+        CGPoint topRight = M7WebcamDevicePoint(portrait, portrait, CGPointMake(.5, .5), CGPointMake(1, 0));
+        AssertNear(topRight.x, 0); AssertNear(topRight.y, 0);
+        CGPoint webcamTop = M7WebcamDevicePoint(portrait, CGSizeMake(1280, 720), CGPointMake(.5, .5),
+            CGPointMake(.5, 0));
+        AssertNear(webcamTop.x, 555.0/1920.0); AssertNear(webcamTop.y, .5);
+
         CVPixelBufferRef pixel = NULL;
         NSDictionary *attributes = @{(id)kCVPixelBufferCGImageCompatibilityKey:@YES,
             (id)kCVPixelBufferCGBitmapContextCompatibilityKey:@YES};
@@ -61,7 +73,10 @@ int main(void) {
             normalizedCenter:CGPointMake(.25, .75) error:&error];
         assert(portraitJPEG && !error); AssertJPEGSize(portraitJPEG, 720, 1280);
         CVPixelBufferRelease(pixel);
-        puts("Webcam encoder: crop, tracking-center clamp and 16:9/9:16 JPEG sizes passed.");
+        assert([@[@"videoToolbox", @"coreImage"] containsObject:encoder.backend]);
+        printf("Webcam encoder backend: %s (VideoToolbox status %d).\n",
+            encoder.backend.UTF8String, encoder.hardwareStatus);
+        puts("Webcam encoder: crop, focus point mapping, tracking-center clamp and 16:9/9:16 JPEG sizes passed.");
     }
     return 0;
 }

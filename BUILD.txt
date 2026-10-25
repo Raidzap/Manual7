@@ -1,28 +1,21 @@
-Manual7 0.7.5 / Manual7 Studio 0.1.2 — registro de build
-Data local: 2026-10-10
+Manual7 0.7.6 / Manual7 Studio 0.1.3 — registro de build
+Data local: 2026-10-25
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura móvel: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo móvel: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
-Build móvel: compilado, vinculado e assinado pelo Theos, sem diagnósticos do compilador.
+Build móvel: compilado, vinculado e assinado pelo Theos com FINALPACKAGE=1, sem diagnósticos do compilador.
 Build Linux: AppImage x86_64 gerado com Electron 44.7.0 e electron-builder 26.15.3.
-Testes locais: 38 testes Python aprovados, 1 conjunto exclusivo de macOS ignorado no Linux; 3 suítes Node aprovadas.
-Smoke test Linux: AppImage abriu, carregou a interface, detectou FFmpeg, filtro zscale e /dev/video10; permaneceu ativo até o encerramento controlado.
-Orientação no Studio: escolha do retorno enviada imediatamente; polling não sobrescreve a seleção; início exige formato e dimensões confirmados; Reframe da gravação permanece independente.
-Auditoria npm de produção: 35 dependências, zero vulnerabilidades conhecidas.
-CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/38061692873
-Inicialização: API, verificação OpenSSH e reconexões fora da main thread; connect limitado a 250 ms; nenhum fallback síncrono no viewDidLoad.
-Bridge: LaunchDaemon como mobile, workers autenticados, TCP_NODELAY, buffers de 512 KiB, relay em blocos de 64 KiB e endpoints TCP somente em 127.0.0.1:27839/27840.
-Modo da webcam: a ativação seleciona Vídeo e termina a configuração da AVCaptureSession antes de abrir o servidor; a troca para Foto fica bloqueada enquanto a webcam estiver ativa.
-Cadência da webcam: alvo de 30 fps sem limitador artificial; encoder processa o frame mais recente disponível e o servidor mantém no máximo um frame pendente.
-Diagnóstico da webcam: registra frames recebidos, codificados, descartados por encoder ocupado, coalescidos pela rede, tempo de encode, bytes do último frame e FPS efetivamente publicado.
-Conversão Linux: FFmpeg usa timestamps do relógio de chegada, fps_mode passthrough e zscale full-range para limited-range antes do yuv420p, eliminando o aviso de pixel format deprecated.
-RAW físico anterior: RAW e RAW+JPEG falharam com AVFoundation -11800 / OSStatus -12780 antes de produzir pixel buffer ou bytes.
-RAW: valida AVFileTypeDNG, cruza supportedRawPhotoPixelFormatTypesForFileType, prepara buffers e registra a cadeia NSError completa.
-Pareamento QR: callback temporário autenticado informa PIN, porta SSH e portas loopback fixas do bridge; cliente valida os valores e abre os dois encaminhamentos TCP.
-Segredos: token e PIN não são copiados para snapshots/eventos; qrencode recebe o payload pela entrada padrão.
-Vídeo/Reframe: master H.264 4:3 a 30 fps, AAC quando disponível, exportação 1920x1080, 1080x1920 ou ambas, central ou rastreada.
-Validação física pendente: medir effectiveFPS, averageEncodeMilliseconds e framesCoalesced no iPhone 7 Plus durante uma sessão longa de webcam.
-SHA-256 do .deb: 2ab2a7adb2cb5090eb0fc3fbfb08f9be6149346a2b89477ff114436e7f74d290
-SHA-256 do AppImage: 56dc4eef380b871372b2c2e7171b721b116f59d2f7f3f41bba63cca79317b369
+Testes locais: 44 testes Python aprovados, incluindo os contratos de compilação iOS com THEOS; 4 suítes Node (13 testes) aprovadas.
+Smoke test Linux: AppImage abriu e permaneceu ativo até o encerramento controlado; interface revisada em 1440 e 800 px de largura com dados simulados.
+Auditoria npm de produção: zero vulnerabilidades conhecidas.
+CI macOS: pendente para este commit.
+Privacidade: IPv4 aparece como •••.•••.•••.••• no Studio (seletor de rede, diálogo SSH, mensagens) e no iPhone (status e diagnóstico exibido); revelação por clique/toque por 10 s. PIN mascarado na linha Remoto. QR e diagnóstico salvo em arquivo permanecem completos.
+Toque para focar: toque no visor do iPhone ou clique no retorno do Studio (controle remoto focusPoint). Somente AF contínuo e AE AUTO adotam o ponto; escolher AUTO/AF novamente recentraliza.
+Desempenho: polling de /v1/state fora do log de sessão; webcamSnapshot sem dispatch_sync na fila do encoder; refresh pausado com a Câmera inativa e sem reatribuir títulos idênticos; CIContext sem gestão de cor; Studio para de consultar o iPhone com a janela oculta.
+Saída de vídeo: no modo Foto a conexão do AVCaptureVideoDataOutput fica desabilitada enquanto peaking e leitor QR estão desligados (session.videoOutputEnabled no diagnóstico).
+Encoder da webcam: VTCompressionSession JPEG (kCMVideoCodecType_JPEG) a partir de buffer 420f renderizado pelo Core Image; a primeira falha volta definitivamente ao JPEG do Core Image. Backend e OSStatus em webcam.encoder.
+Validação física pendente: backend videoToolbox, effectiveFPS, averageEncodeMilliseconds e temperatura no iPhone 7 Plus; ausência de oscilação do preview ao ligar/desligar peaking; toque para focar com lente 1× e 2×.
+SHA-256 do .deb: ddb371914caddf6b2413257d0949503196c5219e14dd93417ec4bd506e670c69
+SHA-256 do AppImage: 5b48d2c9469fc477b9457067a99e84366c7eee3762732cde0a3ffd547fd84742

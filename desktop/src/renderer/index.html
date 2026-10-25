@@ -35,7 +35,7 @@
               <button data-value="vertical">Vertical 9:16</button>
             </div>
           </div>
-          <button id="previewButton" class="button lime" disabled>Iniciar retorno</button>
+          <button id="previewButton" class="button lime" disabled title="Iniciar ou parar o retorno (P)">Iniciar retorno</button>
         </div>
       </div>
 
@@ -45,8 +45,12 @@
           <strong>O visor aparecerá aqui</strong>
           <span>Pareie o iPhone e inicie o retorno da webcam.</span>
         </div>
-        <img id="previewImage" alt="Retorno ao vivo da câmera do iPhone">
+        <img id="previewImage" alt="Retorno ao vivo da câmera do iPhone" title="Clique para focar e medir a exposição neste ponto">
         <div class="safe-frame"></div>
+        <div id="focusRing" class="focus-ring" aria-hidden="true"></div>
+        <button id="fullscreenButton" class="fullscreen-button" type="button" aria-label="Tela cheia" title="Tela cheia (F ou duplo clique)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
         <div class="live-chip"><span></span><b id="liveLabel">OFFLINE</b><em id="streamFormat">16:9</em><em id="streamFPS">— fps</em></div>
         <div class="viewport-footer">
           <div><small>ISO</small><b id="hudISO">—</b></div>
@@ -65,8 +69,9 @@
             <button data-value="video">Vídeo</button>
           </div>
         </div>
-        <button id="captureButton" class="shutter" disabled aria-label="Fotografar"><span></span></button>
+        <button id="captureButton" class="shutter" disabled aria-label="Fotografar" title="Disparar (Espaço)"><span></span></button>
         <div class="transport-copy"><strong id="captureLabel">Fotografar</strong><small id="captureHint">O controle será liberado após conectar.</small></div>
+        <div class="shortcut-hints" aria-hidden="true"><span><kbd>Espaço</kbd> disparar</span><span><kbd>P</kbd> retorno</span><span><kbd>F</kbd> tela cheia</span><span><kbd>Clique</kbd> no visor foca</span></div>
       </div>
 
       <div class="virtual-camera-bar">
@@ -155,6 +160,7 @@
       <div class="pair-steps">
         <label for="interfaceSelect">Rede visível pelo iPhone</label>
         <select id="interfaceSelect"></select>
+        <div class="address-row"><span>Endereço</span><span id="interfaceAddress">—</span></div>
         <ol><li>Abra <b>Câmera → M7</b> no iPhone.</li><li>Toque em <b>Ler QR do PC</b>.</li><li>Aponte a câmera para este código.</li></ol>
         <div class="expiry"><span id="expiryBar"></span></div>
         <p id="pairingStatus">Escolha a rede e gere um código.</p>

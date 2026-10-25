@@ -2,11 +2,11 @@
 
 Tweak rootless para **iPhone 7 Plus, iOS 15.8.3 e Dopamine 2.2.1**. Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.4 moveu a API remota para um bridge `launchd` fora do sandbox da Câmera. A 0.7.5 corrige o modo da webcam e remove os limites artificiais de 10 fps. **RAW, vídeo, Reframe, rastreamento e a webcam otimizada ainda precisam de validação física completa no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.4 moveu a API remota para um bridge `launchd` fora do sandbox da Câmera. A 0.7.5 corrige o modo da webcam e remove os limites artificiais de 10 fps. A 0.7.6 adiciona toque para focar, oculta IPs e PIN até um toque, reorganiza o painel e reduz o trabalho por frame (saída de vídeo desligada quando ociosa e JPEG da webcam por VideoToolbox, com retorno automático ao Core Image). **RAW, vídeo, Reframe, rastreamento e a webcam otimizada ainda precisam de validação física completa no iPhone.**
 
 ## Manual7 Studio para Linux
 
-O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH, visor MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.2](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.2).
+O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH, visor MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.3](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.3).
 
 O Studio 0.1.2 envia imediatamente a escolha **Horizontal 16:9** ou **Vertical 9:16**, impede que a atualização periódica restaure o formato anterior e só abre o visor depois que o iPhone confirma o formato e as dimensões correspondentes. **Formato do retorno** controla a webcam/OBS; **Formato da gravação (Reframe)** controla os vídeos salvos no iPhone.
 
@@ -22,7 +22,7 @@ O limite fixo de 10 fps foi removido do iPhone e do FFmpeg. O encoder tenta proc
 
 O pacote agora declara `openssh-server` como dependência. Durante a instalação pelo Sileo ou `apt`, o pacote oficial do Procursus instala o `sshd`, gera as chaves exclusivas do aparelho e registra `com.openssh.sshd` no `launchd`. O M7 não inclui senha, chave privada ou cópia própria dos binários do OpenSSH.
 
-O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 2222. A linha **Remoto** mostra a porta SSH ativa, `API bridge` e o PIN. O mesmo estado aparece em `state.openSSH` e `openSSH` no diagnóstico. O LaunchDaemon `dev.manual7.bridge` publica a API e a webcam somente no loopback do iPhone, nas portas 27839 e 27840, e também mantém os sockets Unix `0600` para diagnóstico. O processo Câmera faz apenas conexões de saída para o bridge, contornando a proibição de `bind` imposta pelo sandbox. O PIN de seis dígitos é renovado quando um novo painel M7 é aberto e é exigido em todas as rotas de estado, diagnóstico e comando.
+O M7 verifica a instalação em `/var/jb`, as chaves de host e as portas 22 e 2222. A linha **Remoto** mostra a porta SSH ativa, `API bridge` e o PIN mascarado (`••••••`); toque na linha para exibi-lo por 10 segundos. Endereços IPv4 na linha de status e no diagnóstico exibido no iPhone também aparecem como `•••.•••.•••.•••`: toque no status ou use **Mostrar IPs** no diagnóstico para vê-los. O mesmo estado aparece em `state.openSSH` e `openSSH` no diagnóstico. O LaunchDaemon `dev.manual7.bridge` publica a API e a webcam somente no loopback do iPhone, nas portas 27839 e 27840, e também mantém os sockets Unix `0600` para diagnóstico. O processo Câmera faz apenas conexões de saída para o bridge, contornando a proibição de `bind` imposta pelo sandbox. O PIN de seis dígitos é renovado quando um novo painel M7 é aberto e é exigido em todas as rotas de estado, diagnóstico e comando.
 
 ## Inicialização e bridge remoto na 0.7.4
 
@@ -36,7 +36,7 @@ O fluxo completo, comandos e valores aceitos estão em [API-REMOTE.md](API-REMOT
 
 ## Pareamento QR na 0.7.0
 
-Execute `python3 tools/manual7_pair.py` no notebook e toque em **Conexão → Ler QR do PC** no M7. O leitor reutiliza a saída de vídeo já ativa e limita a análise Vision a 3 Hz. Após reconhecer o QR, o iPhone faz um callback temporário com o PIN da sessão e as portas SSH comprovadamente abertas; o script usa o endereço de origem do callback como IP do iPhone e inicia a API em `127.0.0.1:17837` e a webcam em `127.0.0.1:17838`.
+Execute `python3 tools/manual7_pair.py` no notebook e toque em **Conexão com o PC → Pareamento → Ler QR do PC** no M7. O leitor reutiliza a saída de vídeo já ativa e limita a análise Vision a 3 Hz. Após reconhecer o QR, o iPhone faz um callback temporário com o PIN da sessão e as portas SSH comprovadamente abertas; o script usa o endereço de origem do callback como IP do iPhone e inicia a API em `127.0.0.1:17837` e a webcam em `127.0.0.1:17838`.
 
 O token do QR vence, só funciona uma vez e não é gravado. O PIN também continua ausente dos diagnósticos. Estados, tempos, host/porta, erros e contadores ficam em `pairing` e `sessionEvents`. A rede persistente continua sob OpenSSH; o callback HTTP existe apenas durante o pareamento na rede local. Instalação, opções e solução de problemas estão em [PAIRING-LINUX.md](PAIRING-LINUX.md).
 
@@ -94,7 +94,7 @@ O teste verifica que resta apenas `AVCapturePhotoOutput` antes da submissão. **
 
 ## Correção de armazenamento na 0.1.3
 
-No processo Câmera, os caminhos retornados para Documents e Application Support podem apontar para `/var/mobile`, sem autorização de gravação. O diagnóstico confirmou `NSCocoaErrorDomain` 513 nos dois caminhos, com sessão configurada e em execução. A 0.1.2 encerrava a tentativa antes de enviar o disparo ao AVFoundation, porque exigia uma cópia local gravável.
+No processo Câmera, os caminhos retornados para Documents e Application Support podem apontar para `/var/mobile`, sem autorização de gravação. O diagnóstico confirmou `NSCocoaErrorDomain` 513 nos dois caminhos, com sessão configurada e em execução. A 0.1.3 encerrava a tentativa antes de enviar o disparo ao AVFoundation, porque exigia uma cópia local gravável.
 
 Agora a captura prossegue mesmo quando essa cópia não é possível. M7 mantém os dados JPEG/DNG codificados e os entrega ao PhotoKit com `addResourceWithType:data:options:`. A biblioteca Fotos é o destino principal; Documents e Application Support servem apenas para uma cópia opcional. Não é necessário alterar permissões dessas pastas nem escrever diretamente na base de dados da galeria.
 

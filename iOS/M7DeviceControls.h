@@ -19,6 +19,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)enableAutoFocus:(NSError **)error;
 - (BOOL)lockExposure:(NSError **)error;
 - (BOOL)lockFocus:(NSError **)error;
+// Point uses AVFoundation device space: (0,0) top-left and (1,1) bottom-right
+// of the landscape sensor. Only continuous AF/AE adopt it; manual and locked
+// modes are left untouched. Returns @{focus, exposure} with what was moved.
+- (nullable NSDictionary<NSString *, NSNumber *> *)setPointOfInterest:(CGPoint)point
+    error:(NSError **)error;
 // Third-stop EV bias is accepted only in continuous autoexposure mode.
 - (BOOL)setExposureBiasThirds:(NSInteger)thirds
     completion:(nullable void (^)(CMTime))completion error:(NSError **)error;

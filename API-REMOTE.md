@@ -86,6 +86,7 @@ O formato é `set CONTROLE VALOR`:
 | `evThirds` | inteiro em terços de EV; requer exposição automática |
 | `focusMode` | `auto`, `manual`, `lock` |
 | `focusPosition` | número de `0` a `1`; requer foco manual |
+| `focusPoint` | objeto `{"x": 0…1, "y": 0…1}`, origem no canto superior esquerdo do frame publicado pela webcam (ou do frame inteiro da câmera com a webcam parada); move o foco AF e a medição AUTO para o ponto; modos manuais e bloqueados não mudam |
 | `raw` | `true`, `false` |
 | `jpegLongEdge` | `0`, `3264`, `2560`, `2048`, `1600`, `1280`; `0` significa Original |
 | `videoFormat` | `horizontal`, `vertical`, `both` |
@@ -93,6 +94,12 @@ O formato é `set CONTROLE VALOR`:
 | `tracking` | `true`, `false` |
 | `peaking` | `true`, `false` |
 | `peakingThreshold` | número de `0.03` a `0.6` |
+
+Toque para focar pelo terminal, no terço superior do centro:
+
+```sh
+python3 tools/manual7_remote.py set focusPoint '{"x": 0.5, "y": 0.33}'
+```
 
 Exemplo de fotografia manual:
 

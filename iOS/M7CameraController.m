@@ -42,6 +42,25 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"summary":summary ?: @{}, @"points":sampled };
 }
 
+// IPv4 addresses and the API PIN stay masked on screen until tapped; a reveal
+// lasts M7RevealSeconds. The QR payload and the network traffic are unchanged.
+static NSString *const M7IPMask = @"•••.•••.•••.•••";
+static NSString *const M7PINMask = @"••••••";
+static const NSTimeInterval M7RevealSeconds = 10;
+
+static NSString *M7RedactIPv4(NSString *text) {
+    static NSRegularExpression *pattern;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        pattern = [NSRegularExpression regularExpressionWithPattern:
+            @"\\b(?:(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\b"
+            options:0 error:nil];
+    });
+    if (!text.length) return @"";
+    return [pattern stringByReplacingMatchesInString:text options:0
+        range:NSMakeRange(0, text.length) withTemplate:M7IPMask];
+}
+
 // Own the encoded sensor output until Photos confirms saving it. A local
 // backup is optional: Apple's Camera process need not have a Documents sandbox.
 @interface M7Photo : NSObject
@@ -155,7 +174,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (atomic) NSUInteger pairingGeneration;
 @property (nonatomic) CFTimeInterval pairingStartedAt;
 @property (nonatomic) CFTimeInterval lastPairingScanTime;
-@property (nonatomic) NSDictionary *lastWebcamError;
+@property (atomic) NSDictionary *lastWebcamError;
 @property (nonatomic) CFTimeInterval lastWebcamTime;
 @property (nonatomic) CFTimeInterval lastWebcamErrorLogTime;
 @property (nonatomic) CFTimeInterval lastTrackingTime;
@@ -199,6 +218,13 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 @property (atomic) BOOL overlayPending;
 @property (nonatomic) CFTimeInterval lastPeakingTime;
 @property (nonatomic) CFTimeInterval lastFocusRequest;
+@property (nonatomic, copy) NSString *statusText;
+@property (nonatomic) BOOL statusRevealed;
+@property (nonatomic, copy) NSString *remoteStatusText;
+@property (nonatomic) BOOL remoteShowsPIN;
+@property (nonatomic) BOOL pinRevealed;
+@property (nonatomic) NSUInteger revealGeneration;
+@property (nonatomic) UIView *focusIndicator;
 @end
 
 @implementation M7CameraController
@@ -225,6 +251,22 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     row.spacing = 8; row.alignment = UIStackViewAlignmentCenter;
     [row.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
     return row;
+}
+
+- (UILabel *)section:(NSString *)title {
+    UILabel *label = [UILabel new];
+    label.text = title.uppercaseString;
+    label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+    label.textColor = [UIColor colorWithWhite:1 alpha:.5];
+    label.accessibilityTraits = UIAccessibilityTraitHeader;
+    [label.heightAnchor constraintEqualToConstant:30].active = YES;
+    return label;
+}
+
+// UIStackView miscounts repeated identical hidden assignments, and the
+// refresh timer calls this every 300 ms.
+- (void)setRow:(UIView *)row hidden:(BOOL)hidden {
+    if (row.hidden != hidden) row.hidden = hidden;
 }
 
 - (UISlider *)slider:(NSString *)label action:(SEL)action {
@@ -277,9 +319,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [self.view addSubview:top];
 
     UIScrollView *scroll = [UIScrollView new]; scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.indicatorStyle = UIScrollViewIndicatorStyleWhite;
+    scroll.alwaysBounceVertical = YES;
     [self.view addSubview:scroll];
     UIStackView *stack = [UIStackView new]; stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 3; stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.spacing = 2; stack.translatesAutoresizingMaskIntoConstraints = NO;
     [scroll addSubview:stack];
     self.previewView = [UIView new]; self.previewView.clipsToBounds = YES;
     self.previewView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -295,90 +339,121 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.reframeGuideLayer.lineWidth = 1.5;
     self.reframeGuideLayer.lineDashPattern = @[@7, @5];
     [self.previewView.layer addSublayer:self.reframeGuideLayer];
+    self.focusIndicator = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 72, 72)];
+    self.focusIndicator.layer.borderColor = UIColor.systemYellowColor.CGColor;
+    self.focusIndicator.layer.borderWidth = 1.5;
+    self.focusIndicator.userInteractionEnabled = NO;
+    self.focusIndicator.hidden = YES;
+    [self.previewView addSubview:self.focusIndicator];
+    self.previewView.accessibilityHint = @"Toque para focar e medir a exposição nesse ponto.";
+    [self.previewView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self
+        action:@selector(previewTapped:)]];
+    // Pinned below the preview so the measured values never scroll away.
     self.readout = [UILabel new]; self.readout.numberOfLines = 2;
-    self.readout.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    self.readout.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     self.readout.textAlignment = NSTextAlignmentCenter;
-    [stack addArrangedSubview:self.readout];
+    self.readout.adjustsFontSizeToFitWidth = YES; self.readout.minimumScaleFactor = .8;
+    self.readout.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.readout];
     self.status = [UILabel new]; self.status.numberOfLines = 3;
     self.status.font = [UIFont systemFontOfSize:12]; self.status.textColor = UIColor.systemYellowColor;
-    self.status.text = @"Preparando câmera…";
     self.status.translatesAutoresizingMaskIntoConstraints = NO;
+    self.status.userInteractionEnabled = YES;
+    self.status.accessibilityHint = @"Toque para mostrar endereços IP ocultos.";
+    [self.status addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self
+        action:@selector(toggleReveal:)]];
     [self.view addSubview:self.status];
+    [self message:@"Preparando câmera…"];
 
     self.captureMode = [[UISegmentedControl alloc] initWithItems:@[@"Foto", @"Vídeo"]];
     self.captureMode.selectedSegmentIndex = 0;
     [self.captureMode addTarget:self action:@selector(changeCaptureMode) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"Modo" control:self.captureMode]];
-    self.remoteLabel = [UILabel new];
-    self.remoteLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightMedium];
-    self.remoteLabel.textColor = UIColor.systemYellowColor;
-    self.remoteLabel.adjustsFontSizeToFitWidth = YES;
-    self.remoteLabel.minimumScaleFactor = .7;
-    self.remoteLabel.text = [NSString stringWithFormat:@"Bridge iniciando em segundo plano · PIN %@", self.remotePIN];
-    self.remoteLabel.accessibilityLabel = @"Controle remoto por SSH";
-    [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
-    self.pairButton = [self button:@"Ler QR do PC" action:@selector(togglePairingScan)];
-    self.pairButton.accessibilityLabel = @"Parear Manual7 com notebook Linux por QR Code";
-    [stack addArrangedSubview:[self row:@"Conexão" control:self.pairButton]];
-    self.webcamSwitch = [UISwitch new];
-    [self.webcamSwitch addTarget:self action:@selector(changeWebcam) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"Webcam" control:self.webcamSwitch]];
-    self.webcamFormat = [[UISegmentedControl alloc] initWithItems:@[@"16:9", @"9:16"]];
-    self.webcamFormat.selectedSegmentIndex = 0;
-    [self.webcamFormat addTarget:self action:@selector(changeWebcamFormat) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"WC formato" control:self.webcamFormat]];
     self.lens = [[UISegmentedControl alloc] initWithItems:@[@"1×", @"2×"]]; self.lens.selectedSegmentIndex = 0;
     [self.lens addTarget:self action:@selector(changeLens) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"Lente" control:self.lens]];
-    self.exposureMode = [[UISegmentedControl alloc] initWithItems:@[@"AUTO", @"M", @"AE-L"]];
-    self.exposureMode.selectedSegmentIndex = 0;
-    [self.exposureMode addTarget:self action:@selector(changeExposureMode) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"Exposição" control:self.exposureMode]];
-    self.isoSlider = [self slider:@"ISO manual" action:@selector(changeManualExposure)];
-    self.shutterSlider = [self slider:@"Obturador em terços de stop" action:@selector(changeManualExposure)];
-    [stack addArrangedSubview:[self row:@"ISO" control:self.isoSlider]];
-    [stack addArrangedSubview:[self row:@"Shutter" control:self.shutterSlider]];
-    self.evStepper = [UIStepper new]; self.evStepper.stepValue = 1;
-    self.evStepper.accessibilityLabel = @"Compensação EV em terços de stop";
-    [self.evStepper addTarget:self action:@selector(changeEV) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"EV ±⅓" control:self.evStepper]];
-    self.focusMode = [[UISegmentedControl alloc] initWithItems:@[@"AF", @"MF", @"AF-L"]];
-    self.focusMode.selectedSegmentIndex = 0;
-    [self.focusMode addTarget:self action:@selector(changeFocusMode) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"Foco" control:self.focusMode]];
-    self.focusSlider = [self slider:@"Posição do foco de perto a longe" action:@selector(changeManualFocus)];
-    self.focusSlider.continuous = YES;
-    [self.focusSlider addTarget:self action:@selector(changeManualFocus)
-        forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
-    [stack addArrangedSubview:[self row:@"Perto/longe" control:self.focusSlider]];
     self.rawSwitch = [UISwitch new]; self.rawSwitch.on = YES;
     [self.rawSwitch addTarget:self action:@selector(updateSizeControl) forControlEvents:UIControlEventValueChanged];
     self.rawRow = [self row:@"DNG RAW" control:self.rawSwitch];
-    [stack addArrangedSubview:self.rawRow];
     self.sizeButton = [self button:@"Original" action:@selector(chooseJPEGSize)];
     self.sizeButton.accessibilityLabel = @"Tamanho da fotografia JPEG";
     self.sizeRow = [self row:@"Tamanho" control:self.sizeButton];
-    [stack addArrangedSubview:self.sizeRow];
     self.videoFormat = [[UISegmentedControl alloc] initWithItems:@[@"16:9", @"9:16", @"Ambos"]];
     self.videoFormat.selectedSegmentIndex = 2;
     [self.videoFormat addTarget:self action:@selector(changeVideoFormat) forControlEvents:UIControlEventValueChanged];
     self.videoFormatRow = [self row:@"Reframe" control:self.videoFormat];
     self.videoFormatRow.hidden = YES;
-    [stack addArrangedSubview:self.videoFormatRow];
     self.trackingSwitch = [UISwitch new];
     [self.trackingSwitch addTarget:self action:@selector(changeTracking) forControlEvents:UIControlEventValueChanged];
     self.trackingRow = [self row:@"Rastrear" control:self.trackingSwitch];
     self.trackingRow.hidden = YES;
+    [stack addArrangedSubview:[self section:@"Captura"]];
+    [stack addArrangedSubview:[self row:@"Modo" control:self.captureMode]];
+    [stack addArrangedSubview:[self row:@"Lente" control:self.lens]];
+    [stack addArrangedSubview:self.rawRow];
+    [stack addArrangedSubview:self.sizeRow];
+    [stack addArrangedSubview:self.videoFormatRow];
     [stack addArrangedSubview:self.trackingRow];
+
+    // Rows that only apply to one mode are hidden by enableControls.
+    self.exposureMode = [[UISegmentedControl alloc] initWithItems:@[@"AUTO", @"M", @"AE-L"]];
+    self.exposureMode.selectedSegmentIndex = 0;
+    [self.exposureMode addTarget:self action:@selector(changeExposureMode) forControlEvents:UIControlEventValueChanged];
+    self.isoSlider = [self slider:@"ISO manual" action:@selector(changeManualExposure)];
+    self.shutterSlider = [self slider:@"Obturador em terços de stop" action:@selector(changeManualExposure)];
+    self.evStepper = [UIStepper new]; self.evStepper.stepValue = 1;
+    self.evStepper.accessibilityLabel = @"Compensação EV em terços de stop";
+    [self.evStepper addTarget:self action:@selector(changeEV) forControlEvents:UIControlEventValueChanged];
+    [stack addArrangedSubview:[self section:@"Exposição"]];
+    [stack addArrangedSubview:[self row:@"Modo" control:self.exposureMode]];
+    [stack addArrangedSubview:[self row:@"ISO" control:self.isoSlider]];
+    [stack addArrangedSubview:[self row:@"Shutter" control:self.shutterSlider]];
+    [stack addArrangedSubview:[self row:@"EV ±⅓" control:self.evStepper]];
+
+    self.focusMode = [[UISegmentedControl alloc] initWithItems:@[@"AF", @"MF", @"AF-L"]];
+    self.focusMode.selectedSegmentIndex = 0;
+    [self.focusMode addTarget:self action:@selector(changeFocusMode) forControlEvents:UIControlEventValueChanged];
+    self.focusSlider = [self slider:@"Posição do foco de perto a longe" action:@selector(changeManualFocus)];
+    self.focusSlider.continuous = YES;
+    [self.focusSlider addTarget:self action:@selector(changeManualFocus)
+        forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
     self.peakingSwitch = [UISwitch new];
     [self.peakingSwitch addTarget:self action:@selector(changePeaking) forControlEvents:UIControlEventValueChanged];
-    [stack addArrangedSubview:[self row:@"Peaking" control:self.peakingSwitch]];
     self.thresholdSlider = [self slider:@"Limiar do focus peaking" action:@selector(changePeaking)];
     self.thresholdSlider.minimumValue = .03; self.thresholdSlider.maximumValue = .6; self.thresholdSlider.value = .2;
+    [stack addArrangedSubview:[self section:@"Foco"]];
+    [stack addArrangedSubview:[self row:@"Modo" control:self.focusMode]];
+    [stack addArrangedSubview:[self row:@"Perto/longe" control:self.focusSlider]];
+    [stack addArrangedSubview:[self row:@"Peaking" control:self.peakingSwitch]];
     [stack addArrangedSubview:[self row:@"Limiar" control:self.thresholdSlider]];
 
-    self.shutterButton = [self button:@"●  FOTOGRAFAR" action:@selector(capture)];
+    self.remoteLabel = [UILabel new];
+    self.remoteLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightMedium];
+    self.remoteLabel.adjustsFontSizeToFitWidth = YES;
+    self.remoteLabel.minimumScaleFactor = .7;
+    self.remoteLabel.accessibilityLabel = @"Controle remoto por SSH";
+    self.remoteLabel.accessibilityHint = @"Toque para mostrar o PIN.";
+    self.remoteLabel.userInteractionEnabled = YES;
+    [self.remoteLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self
+        action:@selector(toggleReveal:)]];
+    [self setRemoteStatus:@"Bridge iniciando em segundo plano" color:UIColor.systemYellowColor showsPIN:YES];
+    self.pairButton = [self button:@"Ler QR do PC" action:@selector(togglePairingScan)];
+    self.pairButton.accessibilityLabel = @"Parear Manual7 com notebook Linux por QR Code";
+    self.webcamSwitch = [UISwitch new];
+    [self.webcamSwitch addTarget:self action:@selector(changeWebcam) forControlEvents:UIControlEventValueChanged];
+    self.webcamFormat = [[UISegmentedControl alloc] initWithItems:@[@"16:9", @"9:16"]];
+    self.webcamFormat.selectedSegmentIndex = 0;
+    [self.webcamFormat addTarget:self action:@selector(changeWebcamFormat) forControlEvents:UIControlEventValueChanged];
+    [stack addArrangedSubview:[self section:@"Conexão com o PC"]];
+    [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
+    [stack addArrangedSubview:[self row:@"Pareamento" control:self.pairButton]];
+    [stack addArrangedSubview:[self row:@"Webcam" control:self.webcamSwitch]];
+    [stack addArrangedSubview:[self row:@"Formato" control:self.webcamFormat]];
+
+    self.shutterButton = [self button:@"●  FOTOGRAFAR" action:@selector(shutterTapped)];
     self.shutterButton.titleLabel.font = [UIFont systemFontOfSize:19 weight:UIFontWeightSemibold];
+    self.shutterButton.backgroundColor = UIColor.systemYellowColor;
+    [self.shutterButton setTitleColor:UIColor.blackColor forState:UIControlStateNormal];
+    [self.shutterButton setTitleColor:UIColor.blackColor forState:UIControlStateDisabled];
+    self.shutterButton.layer.cornerRadius = 27;
     self.shutterButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.shutterButton];
     [NSLayoutConstraint activateConstraints:@[
@@ -389,17 +464,21 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [self.previewView.leadingAnchor constraintEqualToAnchor:top.leadingAnchor],
         [self.previewView.trailingAnchor constraintEqualToAnchor:top.trailingAnchor],
         [self.previewView.heightAnchor constraintEqualToAnchor:self.view.heightAnchor multiplier:.40],
-        [scroll.topAnchor constraintEqualToAnchor:self.previewView.bottomAnchor],
+        [self.readout.topAnchor constraintEqualToAnchor:self.previewView.bottomAnchor constant:2],
+        [self.readout.leadingAnchor constraintEqualToAnchor:top.leadingAnchor],
+        [self.readout.trailingAnchor constraintEqualToAnchor:top.trailingAnchor],
+        [self.readout.heightAnchor constraintEqualToConstant:32],
+        [scroll.topAnchor constraintEqualToAnchor:self.readout.bottomAnchor],
         [scroll.leadingAnchor constraintEqualToAnchor:top.leadingAnchor],
         [scroll.trailingAnchor constraintEqualToAnchor:top.trailingAnchor],
         [scroll.bottomAnchor constraintEqualToAnchor:self.status.topAnchor constant:-4],
         [self.status.leadingAnchor constraintEqualToAnchor:top.leadingAnchor],
         [self.status.trailingAnchor constraintEqualToAnchor:top.trailingAnchor],
-        [self.status.bottomAnchor constraintEqualToAnchor:self.shutterButton.topAnchor],
-        [self.status.heightAnchor constraintEqualToConstant:48],
+        [self.status.bottomAnchor constraintEqualToAnchor:self.shutterButton.topAnchor constant:-4],
+        [self.status.heightAnchor constraintEqualToConstant:44],
         [self.shutterButton.leadingAnchor constraintEqualToAnchor:top.leadingAnchor],
         [self.shutterButton.trailingAnchor constraintEqualToAnchor:top.trailingAnchor],
-        [self.shutterButton.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [self.shutterButton.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-6],
         [self.shutterButton.heightAnchor constraintEqualToConstant:54],
         [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
         [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
@@ -412,6 +491,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.timer = [NSTimer scheduledTimerWithTimeInterval:.3 repeats:YES block:^(__unused NSTimer *t) {
         [weakSelf refresh];
     }];
+    self.timer.tolerance = .1;
     NSMutableArray *observers = [NSMutableArray new];
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     for (NSNotificationName name in @[UIApplicationWillResignActiveNotification,
@@ -502,6 +582,63 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [self updateReframeGuide];
 }
 
+- (void)previewTapped:(UITapGestureRecognizer *)tap {
+    CGPoint location = [tap locationInView:self.previewView];
+    CGRect video = [self.preview rectForMetadataOutputRectOfInterest:CGRectMake(0, 0, 1, 1)];
+    if (!CGRectContainsPoint(video, location)) return;
+    CGPoint point = [self.preview captureDevicePointOfInterestForPoint:location];
+    UIView *box = self.focusIndicator;
+    [box.layer removeAllAnimations];
+    box.center = location; box.alpha = 1; box.hidden = NO;
+    box.transform = CGAffineTransformMakeScale(1.35, 1.35);
+    [UIView animateWithDuration:.2 animations:^{ box.transform = CGAffineTransformIdentity; }];
+    [UIView animateWithDuration:.3 delay:1 options:UIViewAnimationOptionBeginFromCurrentState
+        animations:^{ box.alpha = 0; } completion:nil];
+    dispatch_async(self.sessionQueue, ^{ [self focusAtDevicePoint:point origin:@"tap"]; });
+}
+
+// sessionQueue only. Continuous AF/AE adopt the point; manual or locked modes
+// keep their values, and the status line says which ones moved.
+- (void)focusAtDevicePoint:(CGPoint)point origin:(NSString *)origin {
+    if (!self.configured || !self.controls || self.captureBusy || self.closing) {
+        [self message:@"A câmera não está pronta para focar."]; return;
+    }
+    NSError *error = nil;
+    NSDictionary *applied = [self.controls setPointOfInterest:point error:&error];
+    [self recordControlChange:@"pointOfInterest" details:@{ @"origin":origin ?: @"", @"x":@(point.x),
+        @"y":@(point.y), @"applied":applied ?: @{}, @"error":M7ErrorDetails(error) }];
+    if (!applied) { [self message:error.localizedDescription]; return; }
+    BOOL focus = [applied[@"focus"] boolValue], exposure = [applied[@"exposure"] boolValue];
+    [self message:focus && exposure ? @"Foco e exposição ajustados no ponto tocado." :
+        focus ? @"Foco no ponto tocado; exposição manual/bloqueada mantida." :
+        @"Exposição no ponto tocado; foco manual/bloqueado mantido."];
+}
+
+// framePoint is top-left normalized in the published webcam frame, or in the
+// whole camera frame while the webcam is off.
+- (void)focusAtFramePoint:(CGPoint)framePoint {
+    BOOL webcam = self.webcamEnabled, vertical = self.webcamVertical;
+    CGPoint center = self.trackingEnabled ? self.trackingCenter : CGPointMake(.5, .5);
+    dispatch_async(self.sessionQueue, ^{
+        AVCaptureDevice *device = self.input.device;
+        CMVideoDimensions native = device.activeFormat.formatDescription ?
+            CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription) : (CMVideoDimensions){0, 0};
+        // Video buffers are rotated to portrait: the format's long side is the height.
+        CGSize source = CGSizeMake(MIN(native.width, native.height), MAX(native.width, native.height));
+        CGSize target = !webcam ? source : vertical ? CGSizeMake(720, 1280) : CGSizeMake(1280, 720);
+        [self focusAtDevicePoint:M7WebcamDevicePoint(source, target, center, framePoint) origin:@"remote"];
+    });
+}
+
+// sessionQueue only. In Photo mode the data output feeds only peaking and the
+// QR reader; with both off its connection is disabled so the camera stops
+// delivering ~30 unused frames per second to videoQueue.
+- (void)updateVideoOutputDemand {
+    AVCaptureConnection *connection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+    BOOL needed = self.videoModeActive || self.peakingEnabled || self.pairingScanning;
+    if (connection && connection.enabled != needed) connection.enabled = needed;
+}
+
 - (void)updateReframeGuide {
     if (self.captureMode.selectedSegmentIndex != 1) {
         self.reframeGuideLayer.path = nil; return;
@@ -545,7 +682,56 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)message:(NSString *)text {
-    dispatch_async(dispatch_get_main_queue(), ^{ self.status.text = text; });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.statusText = text;
+        self.statusRevealed = NO;
+        [self renderStatus];
+    });
+}
+
+// Main thread only.
+- (void)renderStatus {
+    self.status.text = self.statusRevealed ? (self.statusText ?: @"") : M7RedactIPv4(self.statusText);
+}
+
+// Main thread only. The PIN is appended masked unless the user revealed it.
+- (void)setRemoteStatus:(NSString *)text color:(UIColor *)color showsPIN:(BOOL)showsPIN {
+    self.remoteStatusText = text;
+    self.remoteShowsPIN = showsPIN;
+    self.remoteLabel.textColor = color;
+    [self renderRemoteStatus];
+}
+
+- (void)renderRemoteStatus {
+    NSString *text = self.remoteStatusText ?: @"";
+    if (self.remoteShowsPIN)
+        text = [text stringByAppendingFormat:@" · PIN %@", self.pinRevealed ? self.remotePIN : M7PINMask];
+    self.remoteLabel.text = text;
+}
+
+- (void)toggleReveal:(UITapGestureRecognizer *)tap {
+    BOOL pin = tap.view == self.remoteLabel;
+    BOOL revealed;
+    if (pin) {
+        if (!self.remoteShowsPIN) return;
+        revealed = self.pinRevealed = !self.pinRevealed;
+        [self renderRemoteStatus];
+    } else {
+        if ([M7RedactIPv4(self.statusText) isEqualToString:self.statusText ?: @""]) return;
+        revealed = self.statusRevealed = !self.statusRevealed;
+        [self renderStatus];
+    }
+    [[UISelectionFeedbackGenerator new] selectionChanged];
+    if (!revealed) return;
+    NSUInteger generation = ++self.revealGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(M7RevealSeconds * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        typeof(self) owner = weakSelf;
+        if (!owner || generation != owner.revealGeneration) return;
+        owner.pinRevealed = NO; owner.statusRevealed = NO;
+        [owner renderRemoteStatus]; [owner renderStatus];
+    });
 }
 
 - (void)recordRemoteEvent:(NSString *)stage requestID:(NSString *)requestID
@@ -573,9 +759,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"runsOffMainThread":@YES, @"connectTimeoutMilliseconds":@250 };
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.closing || generation != self.remoteGeneration) return;
-        self.remoteLabel.textColor = UIColor.systemYellowColor;
-        self.remoteLabel.text = [NSString stringWithFormat:@"Bridge iniciando em segundo plano · PIN %@",
-            self.remotePIN];
+        [self setRemoteStatus:@"Bridge iniciando em segundo plano" color:UIColor.systemYellowColor
+            showsPIN:YES];
     });
     dispatch_async(self.remoteQueue, ^{
         if (self.closing || generation != self.remoteGeneration) return;
@@ -637,9 +822,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"error":M7ErrorDetails(error) };
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.closing || generation != self.remoteGeneration) return;
-        self.remoteLabel.textColor = started ? UIColor.systemYellowColor : UIColor.systemRedColor;
-        self.remoteLabel.text = started ? [NSString stringWithFormat:@"OpenSSH… · API bridge · PIN %@",
-            self.remotePIN] : @"API indisponível · câmera disponível";
+        [self setRemoteStatus:started ? @"OpenSSH… · API bridge" : @"API indisponível · câmera disponível"
+            color:started ? UIColor.systemYellowColor : UIColor.systemRedColor showsPIN:started];
     });
     [self recordRemoteEvent:started ? @"serverStarted" : @"serverStartFailed" requestID:@""
         details:@{ @"server":self.remoteServer.snapshot ?: @{}, @"error":M7ErrorDetails(error),
@@ -651,23 +835,20 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             if (self.closing || generation != self.remoteGeneration ||
                 UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
             if (!started && [status[@"serviceReachable"] boolValue]) {
-                self.remoteLabel.textColor = UIColor.systemRedColor;
-                self.remoteLabel.text = [NSString stringWithFormat:@"SSH %@ · API indisponível",
-                    status[@"preferredPort"]];
+                [self setRemoteStatus:[NSString stringWithFormat:@"SSH %@ · API indisponível",
+                    status[@"preferredPort"]] color:UIColor.systemRedColor showsPIN:NO];
             } else if (!started) {
-                self.remoteLabel.textColor = UIColor.systemRedColor;
-                self.remoteLabel.text = @"API indisponível · ver diagnóstico";
+                [self setRemoteStatus:@"API indisponível · ver diagnóstico" color:UIColor.systemRedColor
+                    showsPIN:NO];
             } else if ([status[@"serviceReachable"] boolValue]) {
-                self.remoteLabel.textColor = UIColor.systemGreenColor;
-                self.remoteLabel.text = [NSString stringWithFormat:@"SSH %@ · API bridge · PIN %@",
-                    status[@"preferredPort"], self.remotePIN];
+                [self setRemoteStatus:[NSString stringWithFormat:@"SSH %@ · API bridge",
+                    status[@"preferredPort"]] color:UIColor.systemGreenColor showsPIN:YES];
             } else if ([status[@"installed"] boolValue]) {
-                self.remoteLabel.textColor = UIColor.systemYellowColor;
-                self.remoteLabel.text = [NSString stringWithFormat:@"OpenSSH iniciando · API bridge · PIN %@",
-                    self.remotePIN];
+                [self setRemoteStatus:@"OpenSSH iniciando · API bridge" color:UIColor.systemYellowColor
+                    showsPIN:YES];
             } else {
-                self.remoteLabel.textColor = UIColor.systemRedColor;
-                self.remoteLabel.text = @"OpenSSH ausente · reinstale M7";
+                [self setRemoteStatus:@"OpenSSH ausente · reinstale M7" color:UIColor.systemRedColor
+                    showsPIN:NO];
             }
     });
 }
@@ -713,7 +894,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             @"raw":@(self.rawSwitch.enabled), @"videoFormat":@(self.videoFormat.enabled),
             @"tracking":@(self.trackingSwitch.enabled), @"peaking":@(self.peakingSwitch.enabled),
             @"webcam":@(self.webcamSwitch.enabled), @"webcamFormat":@(self.webcamFormat.enabled),
-            @"shutterButton":@(self.shutterButton.enabled) } };
+            @"shutterButton":@(self.shutterButton.enabled), @"focusPoint":@(self.captureAvailable) } };
 }
 
 - (void)remoteStateWithCompletion:(void (^)(NSDictionary *state))completion {
@@ -740,11 +921,16 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     NSString *method = request[@"method"] ?: @"";
     NSString *path = request[@"path"] ?: @"";
     NSDictionary *body = request[@"body"] ?: @{};
-    [self recordRemoteEvent:@"request" requestID:requestID
+    // Manual7 Studio polls /v1/state about once per second. Logging every poll
+    // cost two JSON round trips on the session queue and flushed the 32-entry
+    // session log within seconds, so only failed polls are recorded.
+    BOOL statePoll = [method isEqual:@"GET"] && [path isEqual:@"/v1/state"];
+    if (!statePoll) [self recordRemoteEvent:@"request" requestID:requestID
         details:@{ @"method":method, @"path":path, @"body":body }];
     void (^finish)(NSInteger, NSDictionary *) = ^(NSInteger statusCode, NSDictionary *result) {
         NSMutableDictionary *payload = [result mutableCopy] ?: [NSMutableDictionary new];
         payload[@"requestID"] = requestID;
+        if (statePoll && statusCode < 400) { response(statusCode, payload); return; }
         NSMutableDictionary *logResult = [@{ @"statusCode":@(statusCode),
             @"ok":payload[@"ok"] ?: @NO } mutableCopy];
         for (NSString *key in @[@"accepted", @"command", @"error"])
@@ -756,7 +942,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.5", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.6", @"state":state });
             }];
         });
         return;
@@ -863,6 +1049,19 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         }
         self.focusSlider.value = position; [self changeManualFocus];
         return @{ @"control":control, @"value":@(position), @"async":@YES };
+    }
+    if ([control isEqual:@"focusPoint"]) {
+        NSDictionary *point = [value isKindOfClass:NSDictionary.class] ? value : nil;
+        NSNumber *x = [point[@"x"] isKindOfClass:NSNumber.class] ? point[@"x"] : nil;
+        NSNumber *y = [point[@"y"] isKindOfClass:NSNumber.class] ? point[@"y"] : nil;
+        if (!x || !y || !isfinite(x.doubleValue) || !isfinite(y.doubleValue) || x.doubleValue < 0 ||
+            x.doubleValue > 1 || y.doubleValue < 0 || y.doubleValue > 1) {
+            if (error) *error = @"focusPoint requer {\"x\": 0…1, \"y\": 0…1}."; return nil;
+        }
+        if (!self.captureAvailable) { if (error) *error = @"A câmera não está pronta para focar."; return nil; }
+        [self focusAtFramePoint:CGPointMake(x.doubleValue, y.doubleValue)];
+        return @{ @"control":control, @"value":@{ @"x":x, @"y":y },
+            @"frame":self.webcamEnabled ? @"webcam" : @"camera", @"async":@YES };
     }
     if ([control isEqual:@"raw"]) {
         if (!number || self.videoModeActive || !self.captureAvailable || (number.boolValue && !self.rawSwitch.enabled)) {
@@ -1018,7 +1217,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.5";
+    self.captureTrace[@"version"] = @"0.7.6";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1170,6 +1369,8 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         if (c.isVideoOrientationSupported) c.videoOrientation = AVCaptureVideoOrientationPortrait;
         if (c.isVideoStabilizationSupported) c.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeOff;
     }
+    // A new input recreates the data output connection, enabled by default.
+    [self updateVideoOutputDemand];
     NSMutableDictionary *limits = [self.controls.capabilities mutableCopy];
     CMVideoDimensions native = device.activeFormat.highResolutionStillImageDimensions;
     limits[@"nativeWidth"] = @(native.width); limits[@"nativeHeight"] = @(native.height);
@@ -1185,7 +1386,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
     diagnostic[@"rawCompatibility"] = rawCompatibility;
-    diagnostic[@"version"] = @"0.7.5";
+    diagnostic[@"version"] = @"0.7.6";
     self.lensDiagnostic = diagnostic;
     [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
@@ -1235,6 +1436,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)finishPairingUI:(NSString *)message {
+    dispatch_async(self.sessionQueue, ^{ [self updateVideoOutputDemand]; });
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.pairButton setTitle:@"Ler QR do PC" forState:UIControlStateNormal];
         [self enableControls:self.configured && self.session.isRunning];
@@ -1292,6 +1494,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         });
         self.pairingScanning = YES;
         self.pairingAnalyzing = NO;
+        [self updateVideoOutputDemand];
         BOOL usageDeclared = [NSBundle.mainBundle objectForInfoDictionaryKey:
             @"NSLocalNetworkUsageDescription"] != nil;
         [self recordSessionEvent:@"pairingScanStarted" details:@{ @"timeoutSeconds":@30,
@@ -1376,13 +1579,12 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     });
 }
 
+// Never waits on webcamQueue: a sync there stalled the session queue for a
+// whole JPEG encode on every state poll. The server snapshot takes its own
+// lock and lastWebcamError is atomic.
 - (NSDictionary *)webcamSnapshot {
-    __block NSDictionary *server = @{};
-    __block NSDictionary *lastError = @{};
-    dispatch_sync(self.webcamQueue, ^{
-        server = self.webcamServer.snapshot ?: @{};
-        lastError = self.lastWebcamError ?: @{};
-    });
+    NSDictionary *server = self.webcamServer.snapshot ?: @{};
+    NSDictionary *lastError = self.lastWebcamError ?: @{};
     BOOL vertical = self.webcamVertical;
     double averageEncodeMilliseconds = self.webcamEncodedFrames ?
         self.webcamEncodeMillisecondsTotal / self.webcamEncodedFrames : 0;
@@ -1397,7 +1599,9 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"busyDrops":@(self.webcamBusyDrops),
         @"lastEncodeMilliseconds":@(self.webcamLastEncodeMilliseconds),
         @"averageEncodeMilliseconds":@(averageEncodeMilliseconds),
-        @"lastError":lastError, @"server":server };
+        @"lastError":lastError, @"server":server,
+        @"encoder":@{ @"backend":self.webcamEncoder.backend ?: @"",
+            @"hardwareStatus":@(self.webcamEncoder.hardwareStatus) } };
 }
 
 - (void)changeWebcamFormat {
@@ -1639,6 +1843,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     BOOL selected = !error && [self selectDevice:type error:&error];
     self.configured = selected;
     if (selected) [self.session startRunning];
+    [self updateVideoOutputDemand];
     AVCaptureConnection *videoConnection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
     if (videoConnection.isVideoOrientationSupported) videoConnection.videoOrientation = AVCaptureVideoOrientationPortrait;
     [self recordSessionEvent:@"captureModeConfigured" details:@{@"video":@(video), @"audio":@(audioAdded),
@@ -1689,11 +1894,24 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.evStepper.enabled = ready && self.exposureMode.selectedSegmentIndex == 0;
     self.shutterButton.enabled = ready;
     self.rawSwitch.enabled = ready && !self.videoModeActive && [self.lensDiagnostic[@"rawFormats"] count] > 0;
+    [self updateModeRows];
     [self updateSizeControl];
 }
 
+// Main thread only. Shows only the rows that the selected modes can use.
+- (void)updateModeRows {
+    NSInteger exposure = self.exposureMode.selectedSegmentIndex;
+    [self setRow:self.isoSlider.superview hidden:exposure != 1];
+    [self setRow:self.shutterSlider.superview hidden:exposure != 1];
+    [self setRow:self.evStepper.superview hidden:exposure != 0];
+    [self setRow:self.focusSlider.superview hidden:self.focusMode.selectedSegmentIndex != 1];
+    [self setRow:self.thresholdSlider.superview hidden:!self.peakingSwitch.on];
+}
+
 - (void)refresh {
-    if (self.closing) return;
+    // Nothing on screen to update while the Camera app is inactive.
+    if (self.closing || !self.view.window ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     dispatch_async(self.sessionQueue, ^{
         AVCaptureDevice *d = self.input.device;
         BOOL ready = self.configured && self.session.isRunning && !self.captureBusy &&
@@ -1719,8 +1937,18 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
             else if (pending) title = @"SALVAR FOTO PENDENTE";
             else if (ready && !settled) title = @"Aguardando foco/exposição…";
             else title = self.videoModeActive ? @"●  GRAVAR VÍDEO" : @"●  FOTOGRAFAR";
-            [self.shutterButton setTitle:title forState:UIControlStateNormal];
-            self.readout.text = readout;
+            // Assigning an identical title still relayouts the button.
+            if (![[self.shutterButton titleForState:UIControlStateNormal] isEqualToString:title])
+                [self.shutterButton setTitle:title forState:UIControlStateNormal];
+            UIColor *fill = self.videoRecording ? UIColor.systemRedColor : UIColor.systemYellowColor;
+            if (![self.shutterButton.backgroundColor isEqual:fill]) {
+                self.shutterButton.backgroundColor = fill;
+                UIColor *ink = self.videoRecording ? UIColor.whiteColor : UIColor.blackColor;
+                [self.shutterButton setTitleColor:ink forState:UIControlStateNormal];
+                [self.shutterButton setTitleColor:ink forState:UIControlStateDisabled];
+            }
+            self.shutterButton.alpha = self.shutterButton.enabled ? 1 : .45;
+            if (![self.readout.text isEqualToString:readout]) self.readout.text = readout;
         });
     });
 }
@@ -1753,6 +1981,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)changeExposureMode {
+    [self updateModeRows];
     NSInteger mode = self.exposureMode.selectedSegmentIndex;
     if (mode == 1) {
         dispatch_async(self.sessionQueue, ^{
@@ -1810,6 +2039,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)changeFocusMode {
+    [self updateModeRows];
     NSInteger mode = self.focusMode.selectedSegmentIndex;
     if (mode == 1) {
         dispatch_async(self.sessionQueue, ^{
@@ -1884,12 +2114,16 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)changePeaking {
+    [self updateModeRows];
     self.peakingEnabled = self.peakingSwitch.on;
     self.peakingThreshold = self.thresholdSlider.value;
     if (!self.peakingEnabled) self.peakingView.image = nil;
     BOOL enabled = self.peakingEnabled;
     double threshold = self.peakingThreshold;
-    dispatch_async(self.sessionQueue, ^{ [self recordControlChange:@"peaking" details:@{@"enabled":@(enabled), @"threshold":@(threshold)}]; });
+    dispatch_async(self.sessionQueue, ^{
+        [self updateVideoOutputDemand];
+        [self recordControlChange:@"peaking" details:@{@"enabled":@(enabled), @"threshold":@(threshold)}];
+    });
 }
 
 // sessionQueue only. The in-memory report remains available when Camera cannot
@@ -1901,7 +2135,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.5";
+    self.videoTrace[@"version"] = @"0.7.6";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -2169,6 +2403,11 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
     self.videoProcessing = YES;
     [self beginVideoBackgroundTask];
     [self retryPendingVideoItems:[self.pendingVideos copy] index:0 saved:0];
+}
+
+- (void)shutterTapped {
+    [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+    [self capture];
 }
 
 - (void)capture {
@@ -2578,6 +2817,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         @"pairingScanning":@(self.pairingScanning), @"pairingAnalyzing":@(self.pairingAnalyzing),
         @"pairingSubmitting":@(self.pairingSubmitting),
         @"audioAttached":@([self.session.outputs containsObject:self.audioOutput]),
+        @"videoOutputEnabled":@([self.videoOutput connectionWithMediaType:AVMediaTypeVideo].enabled),
         @"pendingExposure":@(self.pendingExposure),
         @"pendingFocus":@(self.pendingFocus), @"closing":@(self.closing), @"pendingPhotoBytes":@(self.pendingPhoto.data.length), @"captureID":@(self.captureID),
         @"outputs":outputs, @"preset":self.session.sessionPreset ?: @"", @"interrupted":@(self.session.isInterrupted),
@@ -2612,7 +2852,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.5", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.6", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
@@ -2636,18 +2876,29 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
 }
 
 - (void)presentDiagnostic:(NSDictionary *)diagnostic {
+    [self presentDiagnostic:diagnostic revealed:NO];
+}
+
+// IPs are masked in the alert and in the copied text unless the user asks
+// for them with "Mostrar IPs".
+- (void)presentDiagnostic:(NSDictionary *)diagnostic revealed:(BOOL)revealed {
     NSData *json = [NSJSONSerialization dataWithJSONObject:diagnostic options:NSJSONWritingPrettyPrinted error:nil];
-    NSString *text = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
+    NSString *fullText = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"Falha ao montar diagnóstico.";
+    NSString *text = revealed ? fullText : M7RedactIPv4(fullText);
+    BOOL hasIPs = ![text isEqualToString:fullText];
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.5", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.6", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Copiar diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [alert addAction:[UIAlertAction actionWithTitle:revealed ? @"Copiar diagnóstico com IPs" : @"Copiar diagnóstico"
+            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             UIPasteboard.generalPasteboard.string = text;
             [self message:[NSString stringWithFormat:@"Relatório %@ copiado.", shortID]];
         }]];
+        if (hasIPs) [alert addAction:[UIAlertAction actionWithTitle:@"Mostrar IPs" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { [self presentDiagnostic:diagnostic revealed:YES]; }]];
         [alert addAction:[UIAlertAction actionWithTitle:@"Fechar" style:UIAlertActionStyleCancel handler:nil]];
         [self presentExportController:alert];
     });
@@ -2689,7 +2940,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.5" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.6" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
@@ -2948,8 +3199,7 @@ static NSDictionary *M7TrackingReport(NSArray<NSDictionary *> *points, NSDiction
         [self cancelPairing:@"applicationBackground"];
         if (self.webcamSwitch.on) { self.webcamSwitch.on = NO; [self changeWebcam]; }
         [self stopRemoteServerReason:@"applicationBackground"];
-        self.remoteLabel.textColor = UIColor.systemYellowColor;
-        self.remoteLabel.text = [NSString stringWithFormat:@"Pausado · PIN %@", self.remotePIN];
+        [self setRemoteStatus:@"Pausado" color:UIColor.systemYellowColor showsPIN:YES];
         dispatch_async(self.sessionQueue, ^{
             if (self.videoRecording) [self stopVideoRecordingReason:@"applicationBackground" error:nil];
             [self.session stopRunning];

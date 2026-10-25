@@ -12,6 +12,7 @@ const runtime = {
   expiryTimer: null,
   pollTimer: null,
   pollBusy: false,
+  pollFailures: 0,
   webcamFormatChoice: "horizontal",
   webcamFormatChanging: false,
   webcamFormatMismatch: "",
@@ -20,13 +21,60 @@ const runtime = {
   toastTimer: null
 };
 
+// IPv4 addresses never appear in clear text: each one becomes a button that
+// reveals the address on click and hides it again after REVEAL_MS.
+const IPV4_PATTERN = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
+const IP_MASK = "•••.•••.•••.•••";
+const REVEAL_MS = 10_000;
+const revealTimers = new WeakMap();
+
+function redactedIP(address) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "redacted";
+  button.dataset.secret = address;
+  button.textContent = IP_MASK;
+  button.title = "Clique para mostrar o IP";
+  button.setAttribute("aria-label", "Endereço IP oculto. Clique para mostrar.");
+  button.setAttribute("aria-pressed", "false");
+  return button;
+}
+
+function setRedacted(button, revealed) {
+  clearTimeout(revealTimers.get(button));
+  button.classList.toggle("revealed", revealed);
+  button.textContent = revealed ? button.dataset.secret : IP_MASK;
+  button.title = revealed ? "Clique para ocultar o IP" : "Clique para mostrar o IP";
+  button.setAttribute("aria-label", revealed ? `Endereço IP ${button.dataset.secret}. Clique para ocultar.`
+    : "Endereço IP oculto. Clique para mostrar.");
+  button.setAttribute("aria-pressed", String(revealed));
+  if (revealed) revealTimers.set(button, setTimeout(() => setRedacted(button, false), REVEAL_MS));
+}
+
+function setRedactedText(element, text) {
+  const value = String(text ?? "");
+  const nodes = [];
+  let last = 0;
+  for (const match of value.matchAll(IPV4_PATTERN)) {
+    if (match.index > last) nodes.push(document.createTextNode(value.slice(last, match.index)));
+    nodes.push(redactedIP(match[0]));
+    last = match.index + match[0].length;
+  }
+  if (last < value.length) nodes.push(document.createTextNode(value.slice(last)));
+  element.replaceChildren(...nodes);
+}
+
+function hideToastLater(delay = 3600) {
+  clearTimeout(runtime.toastTimer);
+  runtime.toastTimer = setTimeout(() => $("toast").classList.remove("show"), delay);
+}
+
 function message(text, error = false) {
   const toast = $("toast");
-  toast.textContent = text;
+  setRedactedText(toast, text);
   toast.classList.toggle("error", error);
   toast.classList.add("show");
-  clearTimeout(runtime.toastTimer);
-  runtime.toastTimer = setTimeout(() => toast.classList.remove("show"), 3600);
+  hideToastLater(error ? 6000 : 3600);
 }
 
 function setConnection(mode, label) {
@@ -192,14 +240,21 @@ async function pollState() {
   try {
     const state = await window.manual7.state();
     applyState(state);
+    runtime.pollFailures = 0;
   } catch (error) {
     $("syncLabel").textContent = "Sem resposta";
-    if (!/não está conectado/i.test(error.message)) message(error.message, true);
+    // Report the first failure only; a dropped Wi-Fi link would otherwise
+    // stack one error toast per poll.
+    if (!/não está conectado/i.test(error.message) && runtime.pollFailures++ === 0) message(error.message, true);
   } finally { runtime.pollBusy = false; }
 }
 
+// Every poll costs the iPhone a state snapshot, so the poll stops while the
+// window is hidden or minimized.
 function beginPolling() {
   clearInterval(runtime.pollTimer);
+  runtime.pollTimer = null;
+  if (!runtime.connected || document.hidden) return;
   pollState();
   runtime.pollTimer = setInterval(pollState, 900);
 }
@@ -213,14 +268,27 @@ async function loadInterfaces() {
   const list = await window.manual7.interfaces();
   const select = $("interfaceSelect");
   select.replaceChildren();
+  const names = new Map();
+  for (const entry of list) names.set(entry.name, (names.get(entry.name) || 0) + 1);
+  const seen = new Map();
   for (const entry of list) {
+    // <option> cannot hold the reveal button, so it shows only the interface
+    // name; the address appears redacted beside the select.
+    const index = (seen.get(entry.name) || 0) + 1;
+    seen.set(entry.name, index);
     const option = document.createElement("option");
     option.value = entry.address;
-    option.textContent = `${entry.name} · ${entry.address}`;
+    option.textContent = names.get(entry.name) > 1 ? `${entry.name} (${index})` : entry.name;
     select.append(option);
   }
+  updateInterfaceAddress();
   $("generateQRButton").disabled = !list.length;
   if (!list.length) $("pairingStatus").textContent = "Nenhuma rede privada foi encontrada. Conecte o notebook à mesma rede do iPhone.";
+}
+
+function updateInterfaceAddress() {
+  const address = $("interfaceSelect").value;
+  $("interfaceAddress").replaceChildren(address ? redactedIP(address) : document.createTextNode("—"));
 }
 
 async function generateQR() {
@@ -246,7 +314,7 @@ async function generateQR() {
       }
     }, 250);
   } catch (error) {
-    $("pairingStatus").textContent = error.message;
+    setRedactedText($("pairingStatus"), error.message);
     $("generateQRButton").disabled = false;
   }
 }
@@ -277,16 +345,18 @@ async function connectSSH(fingerprint = "") {
     $("sshPassword").value = "";
     $("authDialog").close();
     $("connectButton").textContent = "Desconectar";
+    $("connectButton").classList.replace("primary", "danger");
     $("diagnosticButton").disabled = false;
     $("previewButton").disabled = false;
     $("monitorTitle").textContent = `${runtime.phone?.pairing?.device || "iPhone"} · M7 ${result.version || ""}`;
     setConnection("online", `Conectado · SSH ${result.port}`);
+    runtime.pollFailures = 0;
     beginPolling();
     await refreshSystemStatus();
     message("iPhone conectado. Inicie o retorno visual quando quiser.");
   } catch (error) {
     setConnection("offline", "Falha na conexão");
-    $("authError").textContent = error.message;
+    setRedactedText($("authError"), error.message);
   } finally { $("authConnect").disabled = false; }
 }
 
@@ -308,6 +378,7 @@ function resetDisconnectedUI() {
   stopPolling();
   setConnection("offline", "Desconectado");
   $("connectButton").textContent = "Parear iPhone";
+  $("connectButton").classList.replace("danger", "primary");
   $("diagnosticButton").disabled = true;
   $("previewButton").disabled = true;
   $("captureButton").disabled = true;
@@ -395,7 +466,6 @@ async function startPreview(requestedFormat = "") {
   } catch (error) { message(error.message, true); }
   finally { $("previewButton").disabled = !runtime.connected; }
 }
-
 async function stopPreview() {
   runtime.preview = false;
   runtime.virtualCamera = false;
@@ -473,7 +543,7 @@ window.manual7.onEvent((event) => {
     runtime.pendingFingerprint = "";
     clearInterval(runtime.expiryTimer);
     if ($("pairingDialog").open) $("pairingDialog").close();
-    $("authDevice").textContent = `${event.pairing.device} · iOS ${event.pairing.systemVersion || "—"} · ${event.phoneAddress}:${event.pairing.preferredSSHPort}`;
+    setRedactedText($("authDevice"), `${event.pairing.device} · iOS ${event.pairing.systemVersion || "—"} · ${event.phoneAddress}:${event.pairing.preferredSSHPort}`);
     $("authError").textContent = "O PIN da API foi recebido pelo canal de pareamento. Falta autenticar o SSH.";
     $("trustPanel").hidden = true;
     $("authConnect").textContent = "Conectar";
@@ -541,6 +611,64 @@ $("previewImage").addEventListener("error", () => {
   }, 1200);
 });
 $("previewImage").addEventListener("load", () => { if (runtime.preview) $("liveLabel").textContent = "AO VIVO"; });
+// Click-to-focus: the point is sent normalized to the published frame, so the
+// letterbox around an object-fit: contain image is excluded.
+$("previewImage").addEventListener("click", (event) => {
+  const image = event.currentTarget;
+  if (!runtime.preview || !runtime.state?.available?.focusPoint || !image.naturalWidth) return;
+  const box = image.getBoundingClientRect();
+  const scale = Math.min(box.width / image.naturalWidth, box.height / image.naturalHeight);
+  const width = image.naturalWidth * scale, height = image.naturalHeight * scale;
+  const left = box.left + (box.width - width) / 2, top = box.top + (box.height - height) / 2;
+  const x = (event.clientX - left) / width, y = (event.clientY - top) / height;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return;
+  const ring = $("focusRing");
+  const viewport = $("viewport").getBoundingClientRect();
+  ring.style.left = `${event.clientX - viewport.left}px`;
+  ring.style.top = `${event.clientY - viewport.top}px`;
+  ring.classList.remove("show");
+  void ring.offsetWidth;
+  ring.classList.add("show");
+  setControl("focusPoint", { x: Number(x.toFixed(4)), y: Number(y.toFixed(4)) });
+});
+$("interfaceSelect").addEventListener("change", () => { updateInterfaceAddress(); generateQR(); });
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".redacted");
+  if (!button) return;
+  event.preventDefault();
+  setRedacted(button, !button.classList.contains("revealed"));
+  if (button.closest("#toast")) hideToastLater(REVEAL_MS);
+});
+$("toast").addEventListener("mouseenter", () => clearTimeout(runtime.toastTimer));
+$("toast").addEventListener("mouseleave", () => hideToastLater(2000));
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPolling();
+  else beginPolling();
+});
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else $("viewport").requestFullscreen().catch((error) => message(error.message, true));
+}
+$("fullscreenButton").addEventListener("click", toggleFullscreen);
+$("viewport").addEventListener("dblclick", (event) => { if (!event.target.closest("button")) toggleFullscreen(); });
+document.addEventListener("fullscreenchange", () => {
+  $("fullscreenButton").setAttribute("aria-label", document.fullscreenElement ? "Sair da tela cheia" : "Tela cheia");
+});
+
+// Space shoots, F toggles fullscreen and P starts or stops the return.
+// Ignored while typing or while a dialog is open.
+document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+  if (event.target.closest("input, select, textarea, button, [contenteditable]")) return;
+  if (document.querySelector("dialog[open]")) return;
+  const key = event.key.toLowerCase();
+  if (key === " " && !$("captureButton").disabled) { event.preventDefault(); $("captureButton").click(); }
+  else if (key === "f") toggleFullscreen();
+  else if (key === "p" && !$("previewButton").disabled) $("previewButton").click();
+});
 
 bindControls();
 updateSliderLabels();

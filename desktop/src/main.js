@@ -573,7 +573,7 @@ function installIPC() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1440, height: 920, minWidth: 1080, minHeight: 720,
+    width: 1440, height: 920, minWidth: 720, minHeight: 560,
     backgroundColor: "#07100d", title: "Manual7 Studio",
     show: false,
     webPreferences: {

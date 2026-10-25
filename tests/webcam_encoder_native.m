@@ -73,7 +73,7 @@ int main(void) {
             normalizedCenter:CGPointMake(.25, .75) error:&error];
         assert(portraitJPEG && !error); AssertJPEGSize(portraitJPEG, 720, 1280);
         CVPixelBufferRelease(pixel);
-        assert([@[@"videoToolbox", @"coreImage"] containsObject:encoder.backend]);
+        assert(([@[@"videoToolbox", @"coreImage"] containsObject:encoder.backend]));
         printf("Webcam encoder backend: %s (VideoToolbox status %d).\n",
             encoder.backend.UTF8String, encoder.hardwareStatus);
         puts("Webcam encoder: crop, focus point mapping, tracking-center clamp and 16:9/9:16 JPEG sizes passed.");

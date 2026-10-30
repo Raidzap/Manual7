@@ -17,5 +17,5 @@ Webcam: H.264 VideoToolbox em tempo real, sem B-frames, keyframe a cada 2 s, ~0,
 Montagem: Paisagem (Home à direita, orientação nativa do sensor) por padrão, Invertida ou Retrato; persistida em NSUserDefaults (dev.manual7.cameraMount). 16:9 nativo em 1920 × 1080 na paisagem; 9:16 nativo em 1080 × 1920 em retrato. Fotos permanecem em retrato.
 Estabilidade: idleTimerDisabled enquanto a webcam transmite, com o valor da Câmera restaurado; SO_RCVTIMEO de 3 s nos workers do bridge após a ativação (API e webcam); keepalive SSH de 5 s × 3 no Studio; limite térmico de 20/15 fps em serious/critical.
 Validação física pendente: backend H.264 no A10, effectiveFPS e temperatura em 1920 × 1080; orientação da montagem Paisagem (Home à direita) e Invertida; peaking, guias e rastreamento com o aparelho deitado; toque/clique para focar nas três montagens; conexão USB com usbmuxd real.
-SHA-256 do .deb: 963c9ab7278e94d6d14dc3fc4ffdcbc14765df636ca1370fb1a5cabe326f1780
+SHA-256 do .deb: a7c3b52695ef23b352958f8895f9761ce11241b03cb7f81af92ecd660c9c7eef
 SHA-256 do AppImage: 5fcf3d033b0b7e877e318c56020726a70cc4ef96fc0847abd23aa22e64365d34

@@ -32,7 +32,7 @@ FOUNDATION_EXPORT int32_t M7WebcamH264BitRate(CGSize outputSize);
 // Converts one VideoToolbox H.264 sample (AVCC, length-prefixed NAL units) to
 // an Annex-B access unit. Keyframes are prefixed with SPS/PPS so a client can
 // start decoding from any of them.
-FOUNDATION_EXPORT NSData * _Nullable M7WebcamAnnexBFromSampleBuffer(CMSampleBufferRef sample,
+FOUNDATION_EXPORT NSData * _Nullable M7WebcamAnnexBFromSampleBuffer(CMSampleBufferRef _Nullable sample,
     BOOL * _Nullable keyframe);
 
 // normalizedCenter uses the same top-left origin as the M7 preview/tracker.

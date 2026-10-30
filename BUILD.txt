@@ -1,21 +1,21 @@
-Manual7 0.7.6 / Manual7 Studio 0.1.3 — registro de build
-Data local: 2026-10-25
+Manual7 0.7.7 / Manual7 Studio 0.1.4 — registro de build
+Data local: 2026-10-30
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
 SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura móvel: arm64; deployment target iOS 15.0; rootless / iphoneos-arm64
 Alvo móvel: iPhone 7 Plus, iOS 15.8.3, Dopamine 2.2.1
-Build móvel: compilado, vinculado e assinado pelo Theos com FINALPACKAGE=1, sem diagnósticos do compilador.
+Build móvel: compilado, vinculado e assinado pelo Theos com FINALPACKAGE=1, sem diagnósticos do compilador. Estrutura, permissões e scripts de controle do .deb idênticos aos da 0.7.6.
 Build Linux: AppImage x86_64 gerado com Electron 44.7.0 e electron-builder 26.15.3.
-Testes locais: 44 testes Python aprovados, incluindo os contratos de compilação iOS com THEOS; 4 suítes Node (13 testes) aprovadas.
-Smoke test Linux: AppImage abriu e permaneceu ativo até o encerramento controlado; interface revisada em 1440 e 800 px de largura com dados simulados.
+Testes locais: 58 testes Python aprovados, incluindo os contratos de compilação iOS com THEOS; 6 suítes Node (31 testes) aprovadas.
+Teste ponta a ponta Linux: stream H.264 1080 × 1920 no framing multipart do M7 servido por um iPhone simulado, redistribuído pelo fan-out do Studio e decodificado pelo FFmpeg com os argumentos da câmera virtual: 120 access units, 2 keyframes, zero erros; assinante atrasado iniciou no GOP reenviado.
+WebCodecs no Electron 44 (Linux): o decodificador padrão (VA-API) recusou o stream na máquina de build; o de software decodificou 120/120 frames. O visor usa hardwareAcceleration "prefer-software".
+USB: cliente usbmuxd validado contra um usbmuxd simulado (listagem, Connect, porta em ordem de rede, bytes do SSH após o Result); sem usbmuxd real na máquina de build.
+Smoke test Linux: AppImage abriu e permaneceu ativo até o encerramento controlado.
 Auditoria npm de produção: zero vulnerabilidades conhecidas.
-CI macOS aprovado: https://github.com/Raidzap/Manual7/actions/runs/40221377307 (encoder da webcam em backend videoToolbox, status 0).
-Privacidade: IPv4 aparece como •••.•••.•••.••• no Studio (seletor de rede, diálogo SSH, mensagens) e no iPhone (status e diagnóstico exibido); revelação por clique/toque por 10 s. PIN mascarado na linha Remoto. QR e diagnóstico salvo em arquivo permanecem completos.
-Toque para focar: toque no visor do iPhone ou clique no retorno do Studio (controle remoto focusPoint). Somente AF contínuo e AE AUTO adotam o ponto; escolher AUTO/AF novamente recentraliza.
-Desempenho: polling de /v1/state fora do log de sessão; webcamSnapshot sem dispatch_sync na fila do encoder; refresh pausado com a Câmera inativa e sem reatribuir títulos idênticos; CIContext sem gestão de cor; Studio para de consultar o iPhone com a janela oculta.
-Saída de vídeo: no modo Foto a conexão do AVCaptureVideoDataOutput fica desabilitada enquanto peaking e leitor QR estão desligados (session.videoOutputEnabled no diagnóstico).
-Encoder da webcam: VTCompressionSession JPEG (kCMVideoCodecType_JPEG) a partir de buffer 420f renderizado pelo Core Image; a primeira falha volta definitivamente ao JPEG do Core Image. Backend e OSStatus em webcam.encoder.
-Validação física pendente: backend videoToolbox, effectiveFPS, averageEncodeMilliseconds e temperatura no iPhone 7 Plus; ausência de oscilação do preview ao ligar/desligar peaking; toque para focar com lente 1× e 2×.
-SHA-256 do .deb: ddb371914caddf6b2413257d0949503196c5219e14dd93417ec4bd506e670c69
-SHA-256 do AppImage: 5b48d2c9469fc477b9457067a99e84366c7eee3762732cde0a3ffd547fd84742
+Webcam: H.264 VideoToolbox em tempo real, sem B-frames, keyframe a cada 2 s, ~0,1 bit/pixel (2,8 Mbit/s 720p, 6,2 Mbit/s 1080p); fila H.264 limitada a 2 MiB com retomada no keyframe; MJPEG mantido em 1280 × 720 / 720 × 1280.
+Montagem: Paisagem (Home à direita, orientação nativa do sensor) por padrão, Invertida ou Retrato; persistida em NSUserDefaults (dev.manual7.cameraMount). 16:9 nativo em 1920 × 1080 na paisagem; 9:16 nativo em 1080 × 1920 em retrato. Fotos permanecem em retrato.
+Estabilidade: idleTimerDisabled enquanto a webcam transmite, com o valor da Câmera restaurado; SO_RCVTIMEO de 3 s nos workers do bridge após a ativação (API e webcam); keepalive SSH de 5 s × 3 no Studio; limite térmico de 20/15 fps em serious/critical.
+Validação física pendente: backend H.264 no A10, effectiveFPS e temperatura em 1920 × 1080; orientação da montagem Paisagem (Home à direita) e Invertida; peaking, guias e rastreamento com o aparelho deitado; toque/clique para focar nas três montagens; conexão USB com usbmuxd real.
+SHA-256 do .deb: 963c9ab7278e94d6d14dc3fc4ffdcbc14765df636ca1370fb1a5cabe326f1780
+SHA-256 do AppImage: 5fcf3d033b0b7e877e318c56020726a70cc4ef96fc0847abd23aa22e64365d34

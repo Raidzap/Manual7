@@ -1,6 +1,12 @@
 import importlib.util
+import io
 import json
+import os
 import pathlib
+import plistlib
+import socket
+import struct
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -135,6 +141,118 @@ class RemoteCLITests(unittest.TestCase):
         self.assertEqual(command.call_args_list[1].args[2], "set")
         self.assertEqual(command.call_args_list[1].kwargs["control"], "webcamFormat")
         self.assertEqual(command.call_args_list[2].args[2], "webcam.start")
+
+
+def h264_part(body: bytes, keyframe: bool) -> bytes:
+    return (b"--m7frame\r\nContent-Type: video/h264\r\nContent-Length: %d\r\nX-Keyframe: %d\r\n\r\n"
+            % (len(body), int(keyframe))) + body + b"\r\n"
+
+
+class FakeUsbmuxd:
+    """Unix-socket usbmuxd that lists one USB iPhone and echoes after Connect."""
+
+    def __init__(self, devices):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.directory.name, "usbmuxd")
+        self.devices = devices
+        self.requests = []
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(self.path)
+        self.server.listen(4)
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    @staticmethod
+    def reply(message):
+        payload = plistlib.dumps(message)
+        return struct.pack("<IIII", 16 + len(payload), 1, 8, 1) + payload
+
+    def serve(self):
+        while True:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            with client:
+                header = client.recv(16)
+                length = struct.unpack_from("<I", header)[0]
+                payload = b""
+                while len(payload) < length - 16:
+                    payload += client.recv(65536)
+                request = plistlib.loads(payload)
+                self.requests.append(request)
+                if request["MessageType"] == "ListDevices":
+                    client.sendall(self.reply({"DeviceList": [
+                        {"DeviceID": d["DeviceID"], "Properties": d} for d in self.devices]}))
+                else:
+                    client.sendall(self.reply({"MessageType": "Result", "Number": 0}) + b"SSH-2.0-x\r\n")
+                    while data := client.recv(65536):
+                        client.sendall(data)
+
+    def close(self):
+        self.server.close()
+        self.directory.cleanup()
+
+
+class USBAndH264Tests(unittest.TestCase):
+    def test_usb_connect_reaches_the_only_usb_iphone(self):
+        mux = FakeUsbmuxd([{"DeviceID": 4, "ConnectionType": "USB", "SerialNumber": "a"},
+                           {"DeviceID": 5, "ConnectionType": "Network", "SerialNumber": "b"}])
+        try:
+            with mock.patch.dict(os.environ, {"USBMUXD_SOCKET_ADDRESS": f"UNIX:{mux.path}"}):
+                sock, extra = REMOTE.usb_connect(22)
+            with sock:
+                sock.sendall(b"ping")
+                echoed = extra
+                while b"ping" not in echoed:
+                    echoed += sock.recv(65536)
+            self.assertEqual(echoed, b"SSH-2.0-x\r\nping")
+            connect = mux.requests[-1]
+            self.assertEqual(connect["DeviceID"], 4)
+            self.assertEqual(connect["PortNumber"], 0x1600)
+        finally:
+            mux.close()
+
+    def test_usb_connect_refuses_ambiguous_or_missing_device(self):
+        mux = FakeUsbmuxd([])
+        try:
+            with mock.patch.dict(os.environ, {"USBMUXD_SOCKET_ADDRESS": f"UNIX:{mux.path}"}), \
+                 self.assertRaisesRegex(OSError, "exatamente um iPhone"):
+                REMOTE.usb_connect(22)
+        finally:
+            mux.close()
+        with mock.patch.dict(os.environ, {"USBMUXD_SOCKET_ADDRESS": "UNIX:/nonexistent/usbmuxd"}), \
+             self.assertRaisesRegex(OSError, "usbmuxd indisponível"):
+            REMOTE.usb_connect(22)
+
+    def test_tunnel_over_usb_uses_proxy_command_and_host_alias(self):
+        fake = mock.Mock()
+        with mock.patch.object(REMOTE, "usb_connect", return_value=(fake, b"")), \
+             mock.patch.object(REMOTE.subprocess, "call", return_value=0) as call:
+            self.assertEqual(REMOTE.main(["tunnel", "--usb"]), 0)
+        argv = call.call_args.args[0]
+        self.assertTrue(any(value.startswith("ProxyCommand=") and "usb-proxy %p" in value
+                            for value in argv))
+        self.assertIn("HostKeyAlias=manual7-usb", argv)
+        self.assertEqual(argv[-1], "mobile@manual7-usb")
+        self.assertEqual(argv[argv.index("-p") + 1], "22")
+
+    def test_tunnel_without_host_or_usb_is_rejected(self):
+        self.assertEqual(REMOTE.main(["tunnel"]), 2)
+
+    def test_pump_h264_starts_at_keyframe_and_strips_multipart(self):
+        stream = io.BytesIO(h264_part(b"P0", False) + h264_part(b"K1", True) + h264_part(b"P1", False))
+        sink = io.BytesIO()
+        REMOTE.pump_h264(stream, sink)
+        self.assertEqual(sink.getvalue(), b"K1P1")
+
+    def test_h264_ffmpeg_reads_stdin_without_range_filter(self):
+        command = REMOTE.webcam_h264_ffmpeg_command("/usr/bin/ffmpeg", pathlib.Path("/dev/video10"))
+        self.assertEqual(command[command.index("-f") + 1], "h264")
+        self.assertIn("pipe:0", command)
+        self.assertFalse(any("zscale" in value for value in command))
+        self.assertEqual(command[-2:], ["v4l2", "/dev/video10"])
+        self.assertEqual(REMOTE.h264_url(REMOTE.DEFAULT_WEBCAM_URL),
+                         "http://127.0.0.1:17838/v1/webcam.h264")
 
 
 if __name__ == "__main__":

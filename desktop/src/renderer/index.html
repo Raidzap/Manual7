@@ -35,6 +35,14 @@
               <button data-value="vertical">Vertical 9:16</button>
             </div>
           </div>
+          <div class="return-format">
+            <small>MONTAGEM DO IPHONE</small>
+            <div id="cameraMount" class="segmented" data-control="cameraMount">
+              <button data-value="landscape" class="selected" title="Deitado, botão Home à direita: 16:9 nativo em 1920 × 1080">Paisagem</button>
+              <button data-value="landscapeInverted" title="Deitado, botão Home à esquerda: 16:9 nativo em 1920 × 1080">Invertida</button>
+              <button data-value="portrait" title="Em pé: 9:16 nativo em 1080 × 1920">Retrato</button>
+            </div>
+          </div>
           <button id="previewButton" class="button lime" disabled title="Iniciar ou parar o retorno (P)">Iniciar retorno</button>
         </div>
       </div>
@@ -46,6 +54,7 @@
           <span>Pareie o iPhone e inicie o retorno da webcam.</span>
         </div>
         <img id="previewImage" alt="Retorno ao vivo da câmera do iPhone" title="Clique para focar e medir a exposição neste ponto">
+        <canvas id="previewCanvas" aria-label="Retorno ao vivo da câmera do iPhone" title="Clique para focar e medir a exposição neste ponto"></canvas>
         <div class="safe-frame"></div>
         <div id="focusRing" class="focus-ring" aria-hidden="true"></div>
         <button id="fullscreenButton" class="fullscreen-button" type="button" aria-label="Tela cheia" title="Tela cheia (F ou duplo clique)">

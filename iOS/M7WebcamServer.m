@@ -15,8 +15,10 @@
 static const void *M7WebcamSendQueueKey = &M7WebcamSendQueueKey;
 static const int M7WebcamBridgeConnectTimeoutMilliseconds = 250;
 static const char M7WebcamBridgeActivation[] = "M7-BRIDGE-CLIENT-1\n";
-static const NSUInteger M7WebcamTargetFPS = 30;
-static const double M7WebcamJPEGQuality = .68;
+static const NSUInteger M7WebcamTargetFPS = M7_WEBCAM_TARGET_FPS;
+static const double M7WebcamJPEGQuality = M7_WEBCAM_JPEG_QUALITY;
+// About 2 s of 1080x1920 H.264; past this the queue restarts at a keyframe.
+static const NSUInteger M7WebcamMaxPendingH264Bytes = 2 * 1024 * 1024;
 
 static void M7WebcamTuneSocket(int socketFD) {
     int enabled = 1;
@@ -67,13 +69,34 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
     return YES;
 }
 
+@interface M7WebcamClient : NSObject
+@property (nonatomic) int socket;
+@property (nonatomic) M7WebcamCodec codec;
+// H.264 clients start, and restart after a queue overflow, at a keyframe.
+@property (nonatomic) BOOL waitingKeyframe;
+@end
+
+@implementation M7WebcamClient
+@end
+
+@interface M7WebcamFrame : NSObject
+@property (nonatomic) NSData *data;
+@property (nonatomic) M7WebcamCodec codec;
+@property (nonatomic) BOOL keyframe;
+@property (nonatomic) NSUInteger width;
+@property (nonatomic) NSUInteger height;
+@end
+
+@implementation M7WebcamFrame
+@end
+
 @interface M7WebcamServer ()
 @property (nonatomic) NSString *path;
 @property (nonatomic) NSString *pin;
 @property (nonatomic) dispatch_queue_t acceptQueue;
 @property (nonatomic) dispatch_queue_t sendQueue;
 @property (nonatomic) int listeningSocket;
-@property (nonatomic) NSMutableSet<NSNumber *> *clients;
+@property (nonatomic) NSMutableDictionary<NSNumber *, M7WebcamClient *> *clients;
 @property (nonatomic, getter=isRunning) BOOL running;
 @property (nonatomic) NSUInteger generation;
 @property (nonatomic) dev_t socketDevice;
@@ -93,9 +116,12 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
 @property (nonatomic) BOOL ownsSocketPath;
 @property (nonatomic) NSString *transport;
 @property (nonatomic) BOOL sendInProgress;
-@property (nonatomic) NSData *pendingJPEG;
-@property (nonatomic) NSUInteger pendingWidth;
-@property (nonatomic) NSUInteger pendingHeight;
+@property (nonatomic) NSMutableArray<M7WebcamFrame *> *pendingFrames;
+@property (nonatomic) BOOL keyframeRequested;
+@property (nonatomic) NSUInteger h264FramesPublished;
+@property (nonatomic) NSUInteger h264KeyframesPublished;
+@property (nonatomic) NSUInteger h264QueueOverflows;
+@property (nonatomic) NSUInteger h264FramesSkipped;
 @property (nonatomic) NSUInteger framesSubmitted;
 @property (nonatomic) NSUInteger framesCoalesced;
 @property (nonatomic) NSUInteger lastFrameBytes;
@@ -111,7 +137,8 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
         _sendQueue = dispatch_queue_create("dev.manual7.webcam.send", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(_sendQueue, M7WebcamSendQueueKey,
             (void *)M7WebcamSendQueueKey, NULL);
-        _listeningSocket = -1; _clients = [NSMutableSet new];
+        _listeningSocket = -1; _clients = [NSMutableDictionary new];
+        _pendingFrames = [NSMutableArray new];
         _pendingBridgeSockets = [NSMutableSet new]; _transport = @"multipart-mjpeg-unix";
     }
     return self;
@@ -127,7 +154,8 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
         _sendQueue = dispatch_queue_create("dev.manual7.webcam.send", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(_sendQueue, M7WebcamSendQueueKey,
             (void *)M7WebcamSendQueueKey, NULL);
-        _listeningSocket = -1; _clients = [NSMutableSet new];
+        _listeningSocket = -1; _clients = [NSMutableDictionary new];
+        _pendingFrames = [NSMutableArray new];
         _pendingBridgeSockets = [NSMutableSet new];
     }
     return self;
@@ -194,9 +222,13 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
                 received += (NSUInteger)count;
             }
             if (received == sizeof(activation) &&
-                memcmp(activation, M7WebcamBridgeActivation, sizeof(activation)) == 0)
+                memcmp(activation, M7WebcamBridgeActivation, sizeof(activation)) == 0) {
+                // Idle workers wait indefinitely for activation; once a client is
+                // attached, a missing request must not hold this serial worker.
+                struct timeval receiveTimeout = {.tv_sec = 3, .tv_usec = 0};
+                setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, sizeof(receiveTimeout));
                 [owner handleClient:client generation:generation];
-            else close(client);
+            } else close(client);
             @synchronized (owner) { [owner.pendingBridgeSockets removeObject:@(client)]; }
             client = -1;
         }
@@ -225,7 +257,9 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
         self.framesSubmitted = 0; self.framesPublished = 0; self.framesCoalesced = 0;
         self.bytesPublished = 0; self.lastWidth = 0; self.lastHeight = 0;
         self.lastFrameBytes = 0; self.firstFrameAt = 0; self.lastFrameAt = 0;
-        self.sendInProgress = NO; self.pendingJPEG = nil;
+        self.sendInProgress = NO; [self.pendingFrames removeAllObjects];
+        self.keyframeRequested = NO; self.h264FramesPublished = 0; self.h264KeyframesPublished = 0;
+        self.h264QueueOverflows = 0; self.h264FramesSkipped = 0;
         if (self.bridgePort) return [self startBridge:error];
         const char *path = self.path.fileSystemRepresentation;
         if (!path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
@@ -309,7 +343,8 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
         }
         NSString *request = [[NSString alloc] initWithData:requestData encoding:NSUTF8StringEncoding] ?: @"";
         NSArray<NSString *> *lines = [request componentsSeparatedByString:@"\r\n"];
-        BOOL route = [lines.firstObject hasPrefix:@"GET /v1/webcam.mjpg "];
+        BOOL h264 = [lines.firstObject hasPrefix:@"GET /v1/webcam.h264 "];
+        BOOL route = h264 || [lines.firstObject hasPrefix:@"GET /v1/webcam.mjpg "];
         NSString *providedPIN = @"";
         for (NSString *line in lines) {
             NSRange colon = [line rangeOfString:@":"];
@@ -333,72 +368,155 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
         }
         @synchronized (self) {
             if (!self.running || self.generation != generation) { close(client); return; }
-            [self.clients addObject:@(client)]; ++self.clientsAccepted;
+            M7WebcamClient *entry = [M7WebcamClient new];
+            entry.socket = client;
+            entry.codec = h264 ? M7WebcamCodecH264 : M7WebcamCodecMJPEG;
+            entry.waitingKeyframe = h264;
+            if (h264) self.keyframeRequested = YES;
+            self.clients[@(client)] = entry; ++self.clientsAccepted;
         }
     }
 }
 
 - (NSUInteger)clientCount { @synchronized (self) { return self.clients.count; } }
 
+- (NSUInteger)clientCountForCodec:(M7WebcamCodec)codec {
+    @synchronized (self) {
+        NSUInteger count = 0;
+        for (M7WebcamClient *client in self.clients.allValues) if (client.codec == codec) ++count;
+        return count;
+    }
+}
+
+- (BOOL)consumeKeyframeRequest {
+    @synchronized (self) {
+        BOOL requested = self.keyframeRequested;
+        self.keyframeRequested = NO;
+        return requested;
+    }
+}
+
 - (void)publishJPEG:(NSData *)jpeg width:(NSUInteger)width height:(NSUInteger)height {
-    if (!jpeg.length) return;
+    [self publishFrame:jpeg codec:M7WebcamCodecMJPEG keyframe:YES width:width height:height];
+}
+
+- (void)publishH264:(NSData *)accessUnit keyframe:(BOOL)keyframe
+    width:(NSUInteger)width height:(NSUInteger)height {
+    [self publishFrame:accessUnit codec:M7WebcamCodecH264 keyframe:keyframe width:width height:height];
+}
+
+// Caller holds the lock. JPEG keeps only the newest pending frame. H.264 cannot
+// skip predicted frames, so it queues; on overflow it drops the queue and every
+// H.264 client resumes at the next keyframe, which is requested at once.
+- (void)enqueueFrame:(M7WebcamFrame *)frame {
+    if (frame.codec == M7WebcamCodecMJPEG) {
+        NSIndexSet *stale = [self.pendingFrames indexesOfObjectsPassingTest:
+            ^BOOL(M7WebcamFrame *pending, __unused NSUInteger index, __unused BOOL *stop) {
+                return pending.codec == M7WebcamCodecMJPEG; }];
+        self.framesCoalesced += stale.count;
+        [self.pendingFrames removeObjectsAtIndexes:stale];
+        [self.pendingFrames addObject:frame];
+        return;
+    }
+    NSUInteger pendingBytes = frame.data.length;
+    for (M7WebcamFrame *pending in self.pendingFrames)
+        if (pending.codec == M7WebcamCodecH264) pendingBytes += pending.data.length;
+    if (pendingBytes > M7WebcamMaxPendingH264Bytes) {
+        NSIndexSet *queued = [self.pendingFrames indexesOfObjectsPassingTest:
+            ^BOOL(M7WebcamFrame *pending, __unused NSUInteger index, __unused BOOL *stop) {
+                return pending.codec == M7WebcamCodecH264; }];
+        self.h264FramesSkipped += queued.count;
+        [self.pendingFrames removeObjectsAtIndexes:queued];
+        for (M7WebcamClient *client in self.clients.allValues)
+            if (client.codec == M7WebcamCodecH264) client.waitingKeyframe = YES;
+        ++self.h264QueueOverflows;
+        if (!frame.keyframe) { self.keyframeRequested = YES; ++self.h264FramesSkipped; return; }
+    }
+    [self.pendingFrames addObject:frame];
+}
+
+- (void)publishFrame:(NSData *)data codec:(M7WebcamCodec)codec keyframe:(BOOL)keyframe
+    width:(NSUInteger)width height:(NSUInteger)height {
+    if (!data.length) return;
+    M7WebcamFrame *frame = [M7WebcamFrame new];
+    frame.data = data; frame.codec = codec; frame.keyframe = keyframe;
+    frame.width = width; frame.height = height;
     @synchronized (self) {
         if (!self.running || !self.clients.count) return;
         ++self.framesSubmitted;
-        if (self.sendInProgress) {
-            self.pendingJPEG = jpeg;
-            self.pendingWidth = width;
-            self.pendingHeight = height;
-            ++self.framesCoalesced;
-            return;
-        }
+        [self enqueueFrame:frame];
+        if (self.sendInProgress) return;
         self.sendInProgress = YES;
     }
-    dispatch_async(self.sendQueue, ^{
-        NSData *currentJPEG = jpeg;
-        NSUInteger currentWidth = width, currentHeight = height;
-        while (currentJPEG.length) {
-            NSArray<NSNumber *> *clients = nil;
-            BOOL running = NO;
-            @synchronized (self) {
-                running = self.running;
-                clients = self.clients.allObjects;
+    dispatch_async(self.sendQueue, ^{ [self drainPendingFrames]; });
+}
+
+// sendQueue only.
+- (void)drainPendingFrames {
+    while (YES) {
+        M7WebcamFrame *frame = nil;
+        NSMutableArray<M7WebcamClient *> *targets = [NSMutableArray new];
+        @synchronized (self) {
+            if (!self.running || !self.clients.count || !self.pendingFrames.count) {
+                [self.pendingFrames removeAllObjects];
+                self.sendInProgress = NO;
+                return;
             }
-            if (!running || !clients.count) {
-                @synchronized (self) {
-                    self.pendingJPEG = nil; self.sendInProgress = NO;
+            frame = self.pendingFrames.firstObject;
+            [self.pendingFrames removeObjectAtIndex:0];
+            for (M7WebcamClient *client in self.clients.allValues) {
+                if (client.codec != frame.codec) continue;
+                if (client.waitingKeyframe) {
+                    if (!frame.keyframe) continue;
+                    client.waitingKeyframe = NO;
                 }
-                break;
-            }
-            NSString *head = [NSString stringWithFormat:
-                @"--m7frame\r\nContent-Type: image/jpeg\r\nContent-Length: %lu\r\nX-Width: %lu\r\nX-Height: %lu\r\nX-Timestamp: %.6f\r\n\r\n",
-                (unsigned long)currentJPEG.length, (unsigned long)currentWidth,
-                (unsigned long)currentHeight, NSDate.date.timeIntervalSince1970];
-            NSMutableData *frame = [[head dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
-            [frame appendData:currentJPEG]; [frame appendBytes:"\r\n" length:2];
-            NSUInteger delivered = 0;
-            for (NSNumber *number in clients) {
-                int client = number.intValue;
-                if (M7WebcamSendAll(client, frame)) { ++delivered; continue; }
-                shutdown(client, SHUT_RDWR); close(client);
-                @synchronized (self) { [self.clients removeObject:number]; ++self.clientsDropped; }
-            }
-            if (delivered) @synchronized (self) {
-                NSTimeInterval timestamp = NSDate.date.timeIntervalSince1970;
-                if (!self.firstFrameAt) self.firstFrameAt = timestamp;
-                ++self.framesPublished; self.bytesPublished += currentJPEG.length * delivered;
-                self.lastWidth = currentWidth; self.lastHeight = currentHeight;
-                self.lastFrameBytes = currentJPEG.length;
-                self.lastFrameAt = timestamp;
-            }
-            @synchronized (self) {
-                currentJPEG = self.pendingJPEG;
-                currentWidth = self.pendingWidth; currentHeight = self.pendingHeight;
-                self.pendingJPEG = nil; self.pendingWidth = 0; self.pendingHeight = 0;
-                if (!currentJPEG.length) self.sendInProgress = NO;
+                [targets addObject:client];
             }
         }
-    });
+        if (!targets.count) continue;
+        NSString *type = frame.codec == M7WebcamCodecH264 ? @"video/h264" : @"image/jpeg";
+        NSString *keyframe = frame.codec == M7WebcamCodecH264 ?
+            [NSString stringWithFormat:@"X-Keyframe: %d\r\n", frame.keyframe ? 1 : 0] : @"";
+        NSString *head = [NSString stringWithFormat:
+            @"--m7frame\r\nContent-Type: %@\r\nContent-Length: %lu\r\nX-Width: %lu\r\nX-Height: %lu\r\n%@X-Timestamp: %.6f\r\n\r\n",
+            type, (unsigned long)frame.data.length, (unsigned long)frame.width,
+            (unsigned long)frame.height, keyframe, NSDate.date.timeIntervalSince1970];
+        NSMutableData *part = [[head dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+        [part appendData:frame.data]; [part appendBytes:"\r\n" length:2];
+        NSUInteger delivered = 0;
+        for (M7WebcamClient *client in targets) {
+            if (M7WebcamSendAll(client.socket, part)) { ++delivered; continue; }
+            shutdown(client.socket, SHUT_RDWR); close(client.socket);
+            @synchronized (self) { [self.clients removeObjectForKey:@(client.socket)]; ++self.clientsDropped; }
+        }
+        if (delivered) @synchronized (self) {
+            NSTimeInterval timestamp = NSDate.date.timeIntervalSince1970;
+            if (!self.firstFrameAt) self.firstFrameAt = timestamp;
+            ++self.framesPublished; self.bytesPublished += frame.data.length * delivered;
+            if (frame.codec == M7WebcamCodecH264) {
+                ++self.h264FramesPublished;
+                if (frame.keyframe) ++self.h264KeyframesPublished;
+            }
+            self.lastWidth = frame.width; self.lastHeight = frame.height;
+            self.lastFrameBytes = frame.data.length;
+            self.lastFrameAt = timestamp;
+        }
+    }
+}
+
+- (void)closeClientsForCodec:(M7WebcamCodec)codec {
+    void (^closeMatching)(void) = ^{
+        NSMutableArray<M7WebcamClient *> *closing = [NSMutableArray new];
+        @synchronized (self) {
+            for (M7WebcamClient *client in self.clients.allValues)
+                if (client.codec == codec) [closing addObject:client];
+            for (M7WebcamClient *client in closing) [self.clients removeObjectForKey:@(client.socket)];
+        }
+        for (M7WebcamClient *client in closing) { shutdown(client.socket, SHUT_RDWR); close(client.socket); }
+    };
+    // Sockets are only closed on sendQueue, never under an in-flight send.
+    if (dispatch_get_specific(M7WebcamSendQueueKey)) closeMatching();
+    else dispatch_async(self.sendQueue, closeMatching);
 }
 
 - (void)stop {
@@ -406,14 +524,14 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
     @synchronized (self) {
         if (!self.running && self.listeningSocket < 0 && self.pendingBridgeSockets.count == 0) return;
         self.running = NO; ++self.generation; server = self.listeningSocket; self.listeningSocket = -1;
-        self.pendingJPEG = nil; self.pendingWidth = 0; self.pendingHeight = 0;
+        [self.pendingFrames removeAllObjects];
         for (NSNumber *number in self.pendingBridgeSockets) shutdown(number.intValue, SHUT_RDWR);
         [self.pendingBridgeSockets removeAllObjects];
     }
     if (server >= 0) { shutdown(server, SHUT_RDWR); close(server); }
     void (^closeClients)(void) = ^{
         NSArray<NSNumber *> *clients = nil;
-        @synchronized (self) { clients = self.clients.allObjects; [self.clients removeAllObjects]; }
+        @synchronized (self) { clients = self.clients.allKeys; [self.clients removeAllObjects]; }
         for (NSNumber *number in clients) { shutdown(number.intValue, SHUT_RDWR); close(number.intValue); }
     };
     if (dispatch_get_specific(M7WebcamSendQueueKey)) closeClients();
@@ -440,8 +558,14 @@ static BOOL M7WebcamSendAll(int socketFD, NSData *data) {
             @"framesCoalesced":@(self.framesCoalesced), @"bytesPublished":@(self.bytesPublished),
             @"lastWidth":@(self.lastWidth), @"lastHeight":@(self.lastHeight),
             @"lastFrameBytes":@(self.lastFrameBytes), @"effectiveFPS":@(effectiveFPS),
-            @"sendInProgress":@(self.sendInProgress), @"pendingLatestFrame":@(self.pendingJPEG != nil),
-            @"maxPendingFrames":@1,
+            @"sendInProgress":@(self.sendInProgress), @"pendingLatestFrame":@(self.pendingFrames.count > 0),
+            @"pendingFrames":@(self.pendingFrames.count), @"maxPendingFrames":@1,
+            @"clientsByCodec":@{ @"mjpeg":@([self clientCountForCodec:M7WebcamCodecMJPEG]),
+                @"h264":@([self clientCountForCodec:M7WebcamCodecH264]) },
+            @"h264":@{ @"framesPublished":@(self.h264FramesPublished),
+                @"keyframesPublished":@(self.h264KeyframesPublished),
+                @"queueOverflows":@(self.h264QueueOverflows), @"framesSkipped":@(self.h264FramesSkipped),
+                @"maxPendingBytes":@(M7WebcamMaxPendingH264Bytes) },
             @"targetFPS":@(M7WebcamTargetFPS), @"jpegQuality":@(M7WebcamJPEGQuality), @"startedAt":@(self.startedAt),
             @"lastFrameAt":@(self.lastFrameAt), @"pinRequired":@YES,
             @"bridgePort":@(self.bridgePort),

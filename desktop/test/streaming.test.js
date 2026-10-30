@@ -34,3 +34,17 @@ test("formato escolhido é persistido e confirmado antes do retorno", () => {
   assert.match(main, /expectedWidth/);
   assert.match(main, /expectedHeight/);
 });
+
+test("montagem do iPhone é escolhida no Studio e reinicia o retorno", () => {
+  assert.match(html, /MONTAGEM DO IPHONE/);
+  assert.match(html, /data-value="landscape" class="selected"/);
+  assert.match(renderer, /setControl\("cameraMount", next\)/);
+  assert.match(renderer, /cameraMountChanging/);
+});
+
+test("estado traz latência estimada pelo relógio do iPhone", () => {
+  assert.match(main, /ipcMain\.handle\("m7:state", \(\) => session\.remoteState\(\)\)/);
+  assert.match(main, /sample\.rtt < winner\.rtt/);
+  assert.match(renderer, /state\.studio\?\.latencyMs/);
+  assert.match(renderer, /state\.webcam\?\.thermal\?\.state/);
+});

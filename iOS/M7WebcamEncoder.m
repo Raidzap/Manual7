@@ -4,11 +4,75 @@
 #import <ImageIO/ImageIO.h>
 #import <VideoToolbox/VideoToolbox.h>
 
-const NSUInteger M7WebcamTargetFPS = 30;
-const CGFloat M7WebcamJPEGQuality = .68;
+const NSUInteger M7WebcamTargetFPS = M7_WEBCAM_TARGET_FPS;
+const CGFloat M7WebcamJPEGQuality = M7_WEBCAM_JPEG_QUALITY;
 
 static CGFloat M7WebcamClamp(CGFloat value, CGFloat lower, CGFloat upper) {
     return MIN(upper, MAX(lower, value));
+}
+
+CGSize M7WebcamOutputSize(M7WebcamCodec codec, BOOL vertical, BOOL landscapeSource) {
+    if (codec == M7WebcamCodecH264 && vertical && !landscapeSource) return CGSizeMake(1080, 1920);
+    if (codec == M7WebcamCodecH264 && !vertical && landscapeSource) return CGSizeMake(1920, 1080);
+    return vertical ? CGSizeMake(720, 1280) : CGSizeMake(1280, 720);
+}
+
+CGPoint M7CameraMountDevicePoint(M7CameraMount mount, CGPoint point) {
+    CGFloat x = M7WebcamClamp(point.x, 0, 1), y = M7WebcamClamp(point.y, 0, 1);
+    switch (mount) {
+        case M7CameraMountPortrait: return CGPointMake(y, 1.0 - x);
+        case M7CameraMountLandscapeInverted: return CGPointMake(1.0 - x, 1.0 - y);
+        default: return CGPointMake(x, y);
+    }
+}
+
+// About 0.1 bit per pixel at 30 fps: 2.8 Mbit/s for 720p, 6.2 Mbit/s for
+// 1080x1920. A fraction of the MJPEG stream it replaces.
+int32_t M7WebcamH264BitRate(CGSize size) {
+    return (int32_t)MAX(1000000.0, round(size.width * size.height * M7WebcamTargetFPS * .1));
+}
+
+NSData *M7WebcamAnnexBFromSampleBuffer(CMSampleBufferRef sample, BOOL *keyframe) {
+    CMBlockBufferRef block = sample ? CMSampleBufferGetDataBuffer(sample) : NULL;
+    CMFormatDescriptionRef format = sample ? CMSampleBufferGetFormatDescription(sample) : NULL;
+    if (!block || !format) return nil;
+    BOOL key = YES;
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, false);
+    if (attachments && CFArrayGetCount(attachments)) {
+        CFDictionaryRef first = CFArrayGetValueAtIndex(attachments, 0);
+        CFBooleanRef notSync = CFDictionaryGetValue(first, kCMSampleAttachmentKey_NotSync);
+        key = !(notSync && CFBooleanGetValue(notSync));
+    }
+    size_t parameterCount = 0; int headerLength = 0;
+    if (CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, 0, NULL, NULL,
+        &parameterCount, &headerLength) != noErr || headerLength < 1 || headerLength > 4) return nil;
+    static const uint8_t startCode[] = {0, 0, 0, 1};
+    NSMutableData *output = [NSMutableData new];
+    for (size_t index = 0; key && index < parameterCount; ++index) {
+        const uint8_t *set = NULL; size_t setLength = 0;
+        if (CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, index, &set, &setLength,
+            NULL, NULL) != noErr || !set || !setLength) return nil;
+        [output appendBytes:startCode length:sizeof(startCode)];
+        [output appendBytes:set length:setLength];
+    }
+    size_t length = CMBlockBufferGetDataLength(block);
+    NSMutableData *avcc = [NSMutableData dataWithLength:length];
+    if (!length || CMBlockBufferCopyDataBytes(block, 0, length, avcc.mutableBytes) != kCMBlockBufferNoErr)
+        return nil;
+    const uint8_t *bytes = avcc.bytes;
+    size_t offset = 0;
+    while (offset + (size_t)headerLength <= length) {
+        size_t nalLength = 0;
+        for (int i = 0; i < headerLength; ++i) nalLength = (nalLength << 8) | bytes[offset + i];
+        offset += (size_t)headerLength;
+        if (!nalLength || nalLength > length - offset) return nil;
+        [output appendBytes:startCode length:sizeof(startCode)];
+        [output appendBytes:bytes + offset length:nalLength];
+        offset += nalLength;
+    }
+    if (offset != length) return nil;
+    if (keyframe) *keyframe = key;
+    return output;
 }
 
 CGRect M7WebcamCropRect(CGSize source, CGSize target, CGPoint center) {
@@ -26,14 +90,18 @@ CGRect M7WebcamCropRect(CGSize source, CGSize target, CGPoint center) {
     return CGRectMake(x, y, cropWidth, cropHeight);
 }
 
-CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoint point) {
+CGPoint M7WebcamDevicePointForMount(M7CameraMount mount, CGSize source, CGSize target,
+    CGPoint center, CGPoint point) {
     CGRect crop = M7WebcamCropRect(source, target, center);
     if (CGRectIsEmpty(crop)) return CGPointMake(.5, .5);
     CGFloat u = M7WebcamClamp(point.x, 0, 1), v = M7WebcamClamp(point.y, 0, 1);
     CGFloat x = CGRectGetMinX(crop) + u * CGRectGetWidth(crop);
     CGFloat yTop = source.height - CGRectGetMaxY(crop) + v * CGRectGetHeight(crop);
-    // Portrait buffer to the landscape sensor space used by AVCaptureDevice.
-    return CGPointMake(yTop / source.height, 1.0 - x / source.width);
+    return M7CameraMountDevicePoint(mount, CGPointMake(x / source.width, yTop / source.height));
+}
+
+CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoint point) {
+    return M7WebcamDevicePointForMount(M7CameraMountPortrait, source, target, center, point);
 }
 
 @interface M7WebcamEncoder ()
@@ -45,6 +113,10 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
 @property (nonatomic) BOOL hardwareDisabled;
 @property (atomic, readwrite, copy) NSString *backend;
 @property (atomic, readwrite) int32_t hardwareStatus;
+@property (nonatomic) VTCompressionSessionRef h264;
+@property (nonatomic) CGSize h264Size;
+@property (atomic, readwrite) BOOL h264Available;
+@property (atomic, readwrite) int32_t h264Status;
 @end
 
 
@@ -59,13 +131,67 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
             kCIContextCacheIntermediates:@NO, kCIContextWorkingColorSpace:NSNull.null}];
         _colorSpace = CGColorSpaceCreateDeviceRGB();
         _backend = @"videoToolbox";
+        _h264Available = YES;
     }
     return self;
 }
 
 - (void)dealloc {
     [self invalidateCompression];
+    [self invalidateH264];
     CGColorSpaceRelease(_colorSpace);
+}
+
+- (void)invalidateH264 {
+    if (!_h264) return;
+    VTCompressionSessionInvalidate(_h264);
+    CFRelease(_h264);
+    _h264 = NULL;
+}
+
+- (void)disableH264:(OSStatus)status {
+    self.h264Status = status ?: -1;
+    self.h264Available = NO;
+    [self invalidateH264];
+}
+
+// Real time, no frame reordering (B-frames would add a frame of latency) and
+// a keyframe at least every 2 s so a client that joins mid-stream recovers.
+- (BOOL)prepareH264ForSize:(CGSize)size {
+    if (self.h264 && CGSizeEqualToSize(self.h264Size, size)) return YES;
+    [self invalidateH264];
+    int32_t width = (int32_t)size.width, height = (int32_t)size.height;
+    NSDictionary *attributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (id)kCVPixelBufferWidthKey:@(width), (id)kCVPixelBufferHeightKey:@(height),
+        (id)kCVPixelBufferIOSurfacePropertiesKey:@{} };
+    VTCompressionSessionRef session = NULL;
+    OSStatus status = VTCompressionSessionCreate(kCFAllocatorDefault, width, height,
+        kCMVideoCodecType_H264, NULL, (__bridge CFDictionaryRef)attributes, NULL, NULL, NULL, &session);
+    if (status != noErr || !session) { [self disableH264:status]; return NO; }
+    int32_t bitRate = M7WebcamH264BitRate(size);
+    NSDictionary *properties = @{
+        (id)kVTCompressionPropertyKey_RealTime:@YES,
+        (id)kVTCompressionPropertyKey_ProfileLevel:(id)kVTProfileLevel_H264_High_AutoLevel,
+        (id)kVTCompressionPropertyKey_AllowFrameReordering:@NO,
+        (id)kVTCompressionPropertyKey_MaxKeyFrameInterval:@(M7WebcamTargetFPS * 2),
+        (id)kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration:@2,
+        (id)kVTCompressionPropertyKey_ExpectedFrameRate:@(M7WebcamTargetFPS),
+        (id)kVTCompressionPropertyKey_AverageBitRate:@(bitRate),
+        (id)kVTCompressionPropertyKey_DataRateLimits:@[@(bitRate / 8 * 3 / 2), @1],
+        (id)kVTCompressionPropertyKey_ColorPrimaries:(id)kCVImageBufferColorPrimaries_ITU_R_709_2,
+        (id)kVTCompressionPropertyKey_TransferFunction:(id)kCVImageBufferTransferFunction_ITU_R_709_2,
+        (id)kVTCompressionPropertyKey_YCbCrMatrix:(id)kCVImageBufferYCbCrMatrix_ITU_R_709_2 };
+    status = VTSessionSetProperties(session, (__bridge CFDictionaryRef)properties);
+    if (status == noErr) status = VTCompressionSessionPrepareToEncodeFrames(session);
+    if (status != noErr) {
+        VTCompressionSessionInvalidate(session); CFRelease(session);
+        [self disableH264:status];
+        return NO;
+    }
+    self.h264 = session;
+    self.h264Size = size;
+    return YES;
 }
 
 - (void)invalidateCompression {
@@ -141,14 +267,13 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
     return jpeg;
 }
 
-- (NSData *)JPEGDataForPixelBuffer:(CVPixelBufferRef)pixel vertical:(BOOL)vertical
+- (CIImage *)imageForPixelBuffer:(CVPixelBufferRef)pixel target:(CGSize)target
     normalizedCenter:(CGPoint)center error:(NSError **)error {
     if (!pixel) {
         if (error) *error = [NSError errorWithDomain:@"Manual7.WebcamEncoder" code:1
             userInfo:@{NSLocalizedDescriptionKey:@"Frame da webcam sem pixel buffer."}];
         return nil;
     }
-    CGSize target = vertical ? CGSizeMake(720, 1280) : CGSizeMake(1280, 720);
     CIImage *source = [CIImage imageWithCVPixelBuffer:pixel];
     CGRect extent = source.extent;
     CGRect localCrop = M7WebcamCropRect(extent.size, target, center);
@@ -162,8 +287,14 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
     image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(-crop.origin.x, -crop.origin.y)];
     image = [image imageByApplyingTransform:CGAffineTransformMakeScale(
         target.width/crop.size.width, target.height/crop.size.height)];
-    CGRect output = CGRectMake(0, 0, target.width, target.height);
-    image = [image imageByCroppingToRect:output];
+    return [image imageByCroppingToRect:CGRectMake(0, 0, target.width, target.height)];
+}
+
+- (NSData *)JPEGDataForPixelBuffer:(CVPixelBufferRef)pixel vertical:(BOOL)vertical
+    normalizedCenter:(CGPoint)center error:(NSError **)error {
+    CGSize target = M7WebcamOutputSize(M7WebcamCodecMJPEG, vertical, NO);
+    CIImage *image = [self imageForPixelBuffer:pixel target:target normalizedCenter:center error:error];
+    if (!image) return nil;
     NSData *data = [self hardwareJPEGForImage:image size:target];
     if (!data.length) data = [self.context JPEGRepresentationOfImage:image
         colorSpace:self.colorSpace options:@{
@@ -174,6 +305,64 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
         return nil;
     }
     return data;
+}
+
+- (NSData *)H264AccessUnitForPixelBuffer:(CVPixelBufferRef)pixel vertical:(BOOL)vertical
+    normalizedCenter:(CGPoint)center presentationTime:(CMTime)presentationTime
+    forceKeyframe:(BOOL)forceKeyframe keyframe:(BOOL *)keyframe error:(NSError **)error {
+    BOOL landscapeSource = pixel && CVPixelBufferGetWidth(pixel) > CVPixelBufferGetHeight(pixel);
+    CGSize target = M7WebcamOutputSize(M7WebcamCodecH264, vertical, landscapeSource);
+    NSError *(^failure)(NSInteger, NSString *) = ^(NSInteger code, NSString *message) {
+        return [NSError errorWithDomain:@"Manual7.WebcamEncoder" code:code userInfo:@{
+            NSLocalizedDescriptionKey:message, @"osStatus":@(self.h264Status)}];
+    };
+    if (!self.h264Available || ![self prepareH264ForSize:target]) {
+        if (error) *error = failure(4, @"O encoder H.264 da webcam não está disponível.");
+        return nil;
+    }
+    CIImage *image = [self imageForPixelBuffer:pixel target:target normalizedCenter:center error:error];
+    if (!image) return nil;
+    CVPixelBufferPoolRef pool = VTCompressionSessionGetPixelBufferPool(self.h264);
+    CVPixelBufferRef buffer = NULL;
+    CVReturn created = pool ? CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer)
+        : kCVReturnInvalidArgument;
+    if (created != kCVReturnSuccess || !buffer) {
+        [self disableH264:created];
+        if (error) *error = failure(5, @"Sem buffer para o encoder H.264 da webcam.");
+        return nil;
+    }
+    CVBufferSetAttachment(buffer, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+        kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2,
+        kCVAttachmentMode_ShouldPropagate);
+    CVBufferSetAttachment(buffer, kCVImageBufferTransferFunctionKey,
+        kCVImageBufferTransferFunction_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
+    [self.context render:image toCVPixelBuffer:buffer
+        bounds:CGRectMake(0, 0, target.width, target.height) colorSpace:nil];
+    if (!CMTIME_IS_VALID(presentationTime))
+        presentationTime = CMTimeMake(self.frameIndex, (int32_t)M7WebcamTargetFPS);
+    ++self.frameIndex;
+    NSDictionary *options = forceKeyframe ? @{(id)kVTEncodeFrameOptionKey_ForceKeyFrame:@YES} : nil;
+    __block NSData *accessUnit = nil;
+    __block BOOL accessUnitKeyframe = NO;
+    __block OSStatus outputStatus = noErr;
+    OSStatus status = VTCompressionSessionEncodeFrameWithOutputHandler(self.h264, buffer,
+        presentationTime, kCMTimeInvalid, (__bridge CFDictionaryRef)options, NULL,
+        ^(OSStatus result, VTEncodeInfoFlags flags, CMSampleBufferRef sample) {
+            outputStatus = result;
+            // A frame the rate controller drops arrives without a sample.
+            if (result != noErr || !sample || (flags & kVTEncodeInfo_FrameDropped)) return;
+            accessUnit = M7WebcamAnnexBFromSampleBuffer(sample, &accessUnitKeyframe);
+        });
+    if (status == noErr) status = VTCompressionSessionCompleteFrames(self.h264, kCMTimeInvalid);
+    CVPixelBufferRelease(buffer);
+    if (status != noErr || outputStatus != noErr) {
+        [self disableH264:status ?: outputStatus];
+        if (error) *error = failure(6, @"O encoder H.264 da webcam falhou.");
+        return nil;
+    }
+    if (keyframe) *keyframe = accessUnitKeyframe;
+    return accessUnit;
 }
 
 @end

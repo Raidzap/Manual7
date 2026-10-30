@@ -4,6 +4,8 @@ O Manual7 0.7.5 transmite o mesmo `AVCaptureVideoDataOutput` usado pelo visor e 
 
 Ativar a webcam muda o M7 para Vídeo antes de abrir o stream. O controle Foto/Vídeo fica bloqueado até a webcam ser desligada. Sob pressão do encoder ou da rede, o M7 conserva somente o frame mais recente: a imagem pode ter atraso de transporte, mas a fila não cresce indefinidamente. O diagnóstico separa frames recebidos, codificados, publicados e substituídos.
 
+Enquanto a webcam transmite, o M7 impede o bloqueio automático da tela, que suspenderia a Câmera e encerraria o stream; ao desligar a webcam, a configuração anterior é restaurada (`webcam.screenKeptAwake` no diagnóstico). No Manual7 Studio, o visor e a câmera virtual compartilham uma única conexão com o iPhone, e uma queda do Wi-Fi é detectada em cerca de 15 segundos.
+
 No Manual7 Studio 0.1.2, selecione **Horizontal 16:9** ou **Vertical 9:16** em **Formato do retorno** antes de iniciar. Essa escolha controla o visor e o `v4l2loopback`. O seletor **Formato da gravação (Reframe)** é independente e controla os arquivos salvos no iPhone.
 
 O fluxo permanece dentro do SSH: o bridge escuta apenas em `127.0.0.1:27840` no iPhone e exige o PIN do painel M7 na requisição MJPEG. O pareamento informa a porta ao cliente, que a encaminha para `127.0.0.1:17838`; o FFmpeg lê o MJPEG autenticado e grava em um dispositivo virtual `v4l2loopback`.
@@ -40,6 +42,19 @@ Esse comando encaminha os dois sockets na mesma sessão SSH:
 
 O cliente testa as portas SSH 22 e 2222. Use `--ssh-port 2222` para escolher explicitamente.
 
+### Pelo cabo USB
+
+Com o iPhone ligado por cabo ao notebook, o mesmo SSH pode passar pelo `usbmuxd` em vez do Wi-Fi: a latência fica estável, a banda não disputa a rede e o aparelho carrega durante a chamada. O QR continua sendo lido pelo Wi-Fi, porque é ele que entrega o PIN.
+
+```sh
+sudo apt install usbmuxd
+python3 tools/manual7_pair.py --usb
+# ou, com o PIN já conhecido:
+python3 tools/manual7_remote.py tunnel --usb
+```
+
+O `ssh` usa `manual7_remote.py usb-proxy` como `ProxyCommand` e guarda a chave em `known_hosts` sob o nome `manual7-usb`. Se o iPhone pedir, toque em **Confiar neste computador**. Com mais de um iPhone no USB, o túnel recusa a escolha e é preciso usar o Wi-Fi.
+
 ## Alimentar a webcam virtual
 
 Em outro terminal:
@@ -55,7 +70,25 @@ Para a saída vertical:
 python3 tools/manual7_remote.py webcam-feed --device /dev/video10 --format vertical
 ```
 
-O comando configura o formato, liga a saída no iPhone, espera o endpoint MJPEG, inicia o FFmpeg e desliga a saída ao terminar. `Ctrl+C` encerra. Use `--keep-enabled` somente quando quiser manter o socket de vídeo ativo para outro consumidor.
+O comando configura o formato, liga a saída no iPhone, espera o endpoint de vídeo, inicia o FFmpeg e desliga a saída ao terminar. `Ctrl+C` encerra. Use `--keep-enabled` somente quando quiser manter o socket de vídeo ativo para outro consumidor.
+
+### Montagem do iPhone
+
+O ajuste **Montagem** (painel M7 → Conexão com o PC, ou **Montagem do iPhone** no Studio) define a orientação dos frames de vídeo e é lembrado entre aberturas do M7:
+
+| Montagem | Buffer | 16:9 | 9:16 |
+| --- | --- | --- | --- |
+| **Paisagem** (padrão, botão Home à direita) | 1920 × 1440, orientação nativa do sensor, sem rotação | 1920 × 1080 nativo | 720 × 1280 |
+| **Invertida** (botão Home à esquerda) | 1920 × 1440 girado 180° | 1920 × 1080 nativo | 720 × 1280 |
+| **Retrato** | 1440 × 1920 | 1280 × 720 | 1080 × 1920 nativo |
+
+Os valores valem para H.264; o MJPEG continua em 1280 × 720 / 720 × 1280. A montagem também orienta a gravação e o Reframe: em paisagem, o master 4:3 sai deitado e o recorte 16:9 do Reframe fica nativo. Fotos continuam em retrato. O preview do iPhone mostra a cena correta em qualquer montagem; as guias de Reframe, o marcador do rastreamento e o focus peaking acompanham a rotação. A troca fica bloqueada enquanto a webcam transmite ou um vídeo é gravado/processado. Remotamente: `python3 tools/manual7_remote.py set cameraMount landscape` (`landscapeInverted`, `portrait`).
+
+### H.264
+
+Quando o M7 oferece `/v1/webcam.h264`, `webcam-feed` usa H.264 automaticamente (`--codec auto`). O encoder do iPhone roda em tempo real, sem B-frames, com keyframe a cada 2 s e a cerca de 0,1 bit por pixel: 2,8 Mbit/s em 1280 × 720 e 6,2 Mbit/s em 1080 × 1920, uma fração do MJPEG. As dimensões dependem da montagem (tabela acima): o formato que coincide com a montagem sai no recorte nativo e o cruzado fica em 720p, sem ampliação. O H.264 já chega em BT.709 de faixa limitada, então o FFmpeg não precisa do `zscale`. `--codec mjpeg` força o caminho anterior.
+
+Se a fila H.264 passar de 2 MiB (rede lenta), o M7 a descarta, pede um keyframe imediato e os clientes retomam a partir dele, em vez de acumular atraso. `webcam.h264` no estado e `webcam.server.h264` no diagnóstico mostram disponibilidade, OSStatus, dimensões, bitrate, keyframes e transbordamentos.
 
 Depois selecione **Manual7 Webcam** no OBS Studio, navegador, aplicativo de reunião ou gravador V4L2. Se o programa já estava aberto antes do FFmpeg, feche e abra novamente a lista de câmeras.
 

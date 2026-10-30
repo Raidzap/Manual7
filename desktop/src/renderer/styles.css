@@ -51,8 +51,8 @@ button { color: inherit; }
 .monitor-actions { display: flex; align-items: center; gap: 10px; }
 
 .viewport { position: relative; flex: 1; min-height: 390px; border-radius: 18px; overflow: hidden; background: #030806; box-shadow: var(--shadow); border: 1px solid rgba(201,255,228,.09); }
-.viewport img { width: 100%; height: 100%; object-fit: contain; display: none; background: #000; }
-.viewport.live img { display: block; }
+.viewport img, .viewport canvas { width: 100%; height: 100%; object-fit: contain; display: none; background: #000; }
+.viewport.live:not(.h264) img, .viewport.live.h264 canvas { display: block; }
 .viewport.live .empty-preview { display: none; }
 .empty-preview { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 9px; color: var(--muted); background: radial-gradient(circle at center, rgba(40,95,72,.2), transparent 42%), linear-gradient(135deg, #06100d, #030705); }
 .empty-preview strong { color: #d7e9e1; font-size: 16px; margin-top: 10px; }
@@ -101,6 +101,7 @@ kbd { display: inline-block; min-width: 18px; padding: 1px 5px; margin-right: 4p
 .segmented.compact button { min-width: 49px; padding: 7px 9px; }.segmented.wide { display: flex; }.segmented.wide button { flex: 1; min-width: 0; }
 .return-format { display: grid; gap: 5px; }.return-format small { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .1em; }
 .return-format .segmented button { min-width: 112px; }
+#cameraMount button { min-width: 78px; }
 
 .control-panel { overflow-y: auto; padding: 20px; scrollbar-color: #28483b transparent; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }.panel-heading b { color: var(--muted); font-size: 11px; }

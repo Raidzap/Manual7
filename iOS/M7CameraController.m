@@ -168,6 +168,11 @@ static NSString *M7RedactIPv4(NSString *text) {
 @property (atomic) NSUInteger webcamBusyDrops;
 @property (atomic) double webcamEncodeMillisecondsTotal;
 @property (atomic) double webcamLastEncodeMilliseconds;
+@property (atomic) BOOL webcamHoldsIdleTimer;
+@property (atomic) NSUInteger webcamThermalDrops;
+@property (atomic) M7CameraMount cameraMount;
+@property (nonatomic) UISegmentedControl *mountControl;
+@property (nonatomic) BOOL idleTimerWasDisabled;
 @property (atomic) BOOL pairingScanning;
 @property (atomic) BOOL pairingAnalyzing;
 @property (atomic) BOOL pairingSubmitting;
@@ -226,6 +231,42 @@ static NSString *M7RedactIPv4(NSString *text) {
 @property (nonatomic) NSUInteger revealGeneration;
 @property (nonatomic) UIView *focusIndicator;
 @end
+
+static NSString *const M7CameraMountDefaultsKey = @"dev.manual7.cameraMount";
+
+static NSString *M7ThermalName(NSProcessInfoThermalState state) {
+    switch (state) {
+        case NSProcessInfoThermalStateFair: return @"fair";
+        case NSProcessInfoThermalStateSerious: return @"serious";
+        case NSProcessInfoThermalStateCritical: return @"critical";
+        default: return @"nominal";
+    }
+}
+
+// Webcam frame-rate cap while the A10 is hot; 0 means the camera's own 30 fps.
+// iOS throttles the CPU/GPU itself at these levels, and fewer encoded frames
+// lower the heat instead of letting the encoder fall behind.
+static double M7ThermalMaxWebcamFPS(NSProcessInfoThermalState state) {
+    return state >= NSProcessInfoThermalStateCritical ? 15 :
+        state >= NSProcessInfoThermalStateSerious ? 20 : 0;
+}
+
+static NSString *M7CameraMountName(M7CameraMount mount) {
+    return mount == M7CameraMountPortrait ? @"portrait" :
+        mount == M7CameraMountLandscapeInverted ? @"landscapeInverted" : @"landscape";
+}
+
+static AVCaptureVideoOrientation M7VideoOrientationForMount(M7CameraMount mount) {
+    return mount == M7CameraMountPortrait ? AVCaptureVideoOrientationPortrait :
+        mount == M7CameraMountLandscapeInverted ? AVCaptureVideoOrientationLandscapeLeft :
+        AVCaptureVideoOrientationLandscapeRight;
+}
+
+// Orientation that shows a buffer of `mount` upright in the portrait preview.
+static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
+    return mount == M7CameraMountPortrait ? UIImageOrientationUp :
+        mount == M7CameraMountLandscapeInverted ? UIImageOrientationLeft : UIImageOrientationRight;
+}
 
 @implementation M7CameraController
 
@@ -300,6 +341,10 @@ static NSString *M7RedactIPv4(NSString *text) {
     self.trackingCenter = CGPointMake(.5, .5);
     self.remotePIN = [NSString stringWithFormat:@"%06u", arc4random_uniform(900000)+100000];
     self.webcamEncoder = [M7WebcamEncoder new];
+    NSNumber *savedMount = [NSUserDefaults.standardUserDefaults objectForKey:M7CameraMountDefaultsKey];
+    NSInteger mount = [savedMount isKindOfClass:NSNumber.class] ? savedMount.integerValue : M7CameraMountLandscape;
+    self.cameraMount = mount >= M7CameraMountLandscape && mount <= M7CameraMountPortrait ?
+        (M7CameraMount)mount : M7CameraMountLandscape;
     self.pairingManager = [M7PairingManager new];
     self.remoteBindAttempts = @[];
     self.remoteStartup = @{ @"state":@"pending", @"reason":@"viewDidLoad" };
@@ -442,11 +487,16 @@ static NSString *M7RedactIPv4(NSString *text) {
     self.webcamFormat = [[UISegmentedControl alloc] initWithItems:@[@"16:9", @"9:16"]];
     self.webcamFormat.selectedSegmentIndex = 0;
     [self.webcamFormat addTarget:self action:@selector(changeWebcamFormat) forControlEvents:UIControlEventValueChanged];
+    self.mountControl = [[UISegmentedControl alloc] initWithItems:@[@"Paisagem", @"Invertida", @"Retrato"]];
+    self.mountControl.selectedSegmentIndex = self.cameraMount;
+    self.mountControl.accessibilityLabel = @"Montagem do iPhone: paisagem com o botão Home à direita, invertida ou retrato";
+    [self.mountControl addTarget:self action:@selector(changeCameraMount) forControlEvents:UIControlEventValueChanged];
     [stack addArrangedSubview:[self section:@"Conexão com o PC"]];
     [stack addArrangedSubview:[self row:@"Remoto" control:self.remoteLabel]];
     [stack addArrangedSubview:[self row:@"Pareamento" control:self.pairButton]];
     [stack addArrangedSubview:[self row:@"Webcam" control:self.webcamSwitch]];
     [stack addArrangedSubview:[self row:@"Formato" control:self.webcamFormat]];
+    [stack addArrangedSubview:[self row:@"Montagem" control:self.mountControl]];
 
     self.shutterButton = [self button:@"●  FOTOGRAFAR" action:@selector(shutterTapped)];
     self.shutterButton.titleLabel.font = [UIFont systemFontOfSize:19 weight:UIFontWeightSemibold];
@@ -496,7 +546,8 @@ static NSString *M7RedactIPv4(NSString *text) {
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     for (NSNotificationName name in @[UIApplicationWillResignActiveNotification,
           UIApplicationDidBecomeActiveNotification, AVCaptureSessionWasInterruptedNotification,
-          AVCaptureSessionInterruptionEndedNotification, AVCaptureSessionRuntimeErrorNotification]) {
+          AVCaptureSessionInterruptionEndedNotification, AVCaptureSessionRuntimeErrorNotification,
+          NSProcessInfoThermalStateDidChangeNotification]) {
         id token = [nc addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
             usingBlock:^(NSNotification *note) { [weakSelf notification:note]; }];
         [observers addObject:token];
@@ -619,14 +670,19 @@ static NSString *M7RedactIPv4(NSString *text) {
 - (void)focusAtFramePoint:(CGPoint)framePoint {
     BOOL webcam = self.webcamEnabled, vertical = self.webcamVertical;
     CGPoint center = self.trackingEnabled ? self.trackingCenter : CGPointMake(.5, .5);
+    M7CameraMount mount = self.cameraMount;
     dispatch_async(self.sessionQueue, ^{
         AVCaptureDevice *device = self.input.device;
         CMVideoDimensions native = device.activeFormat.formatDescription ?
             CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription) : (CMVideoDimensions){0, 0};
-        // Video buffers are rotated to portrait: the format's long side is the height.
-        CGSize source = CGSizeMake(MIN(native.width, native.height), MAX(native.width, native.height));
-        CGSize target = !webcam ? source : vertical ? CGSizeMake(720, 1280) : CGSizeMake(1280, 720);
-        [self focusAtDevicePoint:M7WebcamDevicePoint(source, target, center, framePoint) origin:@"remote"];
+        // The format is landscape; portrait buffers swap its sides.
+        CGFloat longSide = MAX(native.width, native.height), shortSide = MIN(native.width, native.height);
+        BOOL landscape = mount != M7CameraMountPortrait;
+        CGSize source = landscape ? CGSizeMake(longSide, shortSide) : CGSizeMake(shortSide, longSide);
+        // Only the aspect ratio of the target matters for the crop.
+        CGSize target = !webcam ? source : M7WebcamOutputSize(M7WebcamCodecMJPEG, vertical, landscape);
+        [self focusAtDevicePoint:M7WebcamDevicePointForMount(mount, source, target, center, framePoint)
+            origin:@"remote"];
     });
 }
 
@@ -639,6 +695,22 @@ static NSString *M7RedactIPv4(NSString *text) {
     if (connection && connection.enabled != needed) connection.enabled = needed;
 }
 
+// Maps a top-left normalized point of the video buffer into `frame`, the
+// portrait preview of the sensor: the device space (landscape, Home button on
+// the right) appears rotated 90° clockwise there.
+- (CGPoint)previewPointForBufferPoint:(CGPoint)point inFrame:(CGRect)frame {
+    CGPoint device = M7CameraMountDevicePoint(self.cameraMount, point);
+    return CGPointMake(CGRectGetMinX(frame) + (1.0 - device.y) * CGRectGetWidth(frame),
+        CGRectGetMinY(frame) + device.x * CGRectGetHeight(frame));
+}
+
+- (CGRect)previewRectForBufferRect:(CGRect)rect inFrame:(CGRect)frame {
+    CGPoint a = [self previewPointForBufferPoint:rect.origin inFrame:frame];
+    CGPoint b = [self previewPointForBufferPoint:CGPointMake(CGRectGetMaxX(rect), CGRectGetMaxY(rect))
+        inFrame:frame];
+    return CGRectMake(MIN(a.x, b.x), MIN(a.y, b.y), fabs(a.x - b.x), fabs(a.y - b.y));
+}
+
 - (void)updateReframeGuide {
     if (self.captureMode.selectedSegmentIndex != 1) {
         self.reframeGuideLayer.path = nil; return;
@@ -646,33 +718,32 @@ static NSString *M7RedactIPv4(NSString *text) {
     CGRect bounds = self.previewView.bounds;
     CGFloat width = CGRectGetWidth(bounds), height = CGRectGetHeight(bounds);
     if (width <= 0 || height <= 0) return;
-    // The preview and Vision coordinates share a normalized, top-left origin.
-    // Each crop follows only the axis that is removed by aspect-fill.
+    // The preview always shows the 4:3 sensor in portrait. The crops and the
+    // Vision center live in the buffer's normalized, top-left space, which the
+    // mount may rotate relative to the preview.
     CGFloat masterWidth = MIN(width, height * 3.0/4.0);
     CGFloat masterHeight = masterWidth * 4.0/3.0;
     if (masterHeight > height) { masterHeight = height; masterWidth = height * 3.0/4.0; }
     CGRect master = CGRectMake((width-masterWidth)/2.0, (height-masterHeight)/2.0,
         masterWidth, masterHeight);
+    CGSize buffer = self.cameraMount == M7CameraMountPortrait ? CGSizeMake(3, 4) : CGSizeMake(4, 3);
+    CGPoint center = self.trackingSwitch.on ? self.trackingCenter : CGPointMake(.5, .5);
+    CGRect (^bufferCrop)(CGSize) = ^CGRect(CGSize target) {
+        CGRect crop = M7WebcamCropRect(buffer, target, center);  // Core Image: bottom-left origin.
+        return CGRectMake(CGRectGetMinX(crop) / buffer.width,
+            (buffer.height - CGRectGetMaxY(crop)) / buffer.height,
+            CGRectGetWidth(crop) / buffer.width, CGRectGetHeight(crop) / buffer.height);
+    };
     UIBezierPath *path = [UIBezierPath bezierPath];
     NSInteger mode = self.videoFormat.selectedSegmentIndex;
-    CGPoint center = self.trackingSwitch.on ? self.trackingCenter : CGPointMake(.5, .5);
-    if (mode == 0 || mode == 2) {
-        CGFloat landscapeHeight = masterWidth * 9.0/16.0;
-        CGFloat y = CGRectGetMinY(master) + center.y*masterHeight-landscapeHeight/2.0;
-        y = MIN(CGRectGetMaxY(master)-landscapeHeight, MAX(CGRectGetMinY(master), y));
-        [path appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(CGRectGetMinX(master),
-            y, masterWidth, landscapeHeight)]];
-    }
-    if (mode == 1 || mode == 2) {
-        CGFloat portraitWidth = masterHeight * 9.0/16.0;
-        CGFloat x = CGRectGetMinX(master) + center.x*masterWidth-portraitWidth/2.0;
-        x = MIN(CGRectGetMaxX(master)-portraitWidth, MAX(CGRectGetMinX(master), x));
-        [path appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(x,
-            CGRectGetMinY(master), portraitWidth, masterHeight)]];
-    }
+    if (mode == 0 || mode == 2)
+        [path appendPath:[UIBezierPath bezierPathWithRect:[self previewRectForBufferRect:
+            bufferCrop(CGSizeMake(16, 9)) inFrame:master]]];
+    if (mode == 1 || mode == 2)
+        [path appendPath:[UIBezierPath bezierPathWithRect:[self previewRectForBufferRect:
+            bufferCrop(CGSizeMake(9, 16)) inFrame:master]]];
     if (self.trackingSwitch.on) {
-        CGPoint marker = CGPointMake(CGRectGetMinX(master)+center.x*masterWidth,
-            CGRectGetMinY(master)+center.y*masterHeight);
+        CGPoint marker = [self previewPointForBufferPoint:center inFrame:master];
         [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(marker.x-8, marker.y-8, 16, 16)]];
     }
     self.reframeGuideLayer.frame = bounds;
@@ -873,6 +944,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     NSArray *focusNames = @[@"auto", @"manual", @"lock"];
     NSArray *videoNames = @[@"horizontal", @"vertical", @"both"];
     NSArray *webcamNames = @[@"horizontal", @"vertical"];
+    NSString *mountName = M7CameraMountName(self.cameraMount);
     NSInteger exposureIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.exposureMode.selectedSegmentIndex));
     NSInteger focusIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.focusMode.selectedSegmentIndex));
     NSInteger videoIndex = MIN((NSInteger)2, MAX((NSInteger)0, self.videoFormat.selectedSegmentIndex));
@@ -883,6 +955,7 @@ static NSString *M7RedactIPv4(NSString *text) {
         @"raw":@(self.rawSwitch.on), @"jpegLongEdge":@(self.jpegLongEdge),
         @"videoFormat":videoNames[videoIndex], @"tracking":@(self.trackingSwitch.on),
         @"webcam":@(self.webcamSwitch.on), @"webcamFormat":webcamNames[webcamIndex],
+        @"cameraMount":mountName,
         @"peaking":@(self.peakingSwitch.on), @"peakingThreshold":@(self.thresholdSlider.value),
         @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
         @"captureBusy":@(self.captureBusy), @"rawCaptureWaiting":@(self.rawCaptureWaiting),
@@ -894,6 +967,7 @@ static NSString *M7RedactIPv4(NSString *text) {
             @"raw":@(self.rawSwitch.enabled), @"videoFormat":@(self.videoFormat.enabled),
             @"tracking":@(self.trackingSwitch.enabled), @"peaking":@(self.peakingSwitch.enabled),
             @"webcam":@(self.webcamSwitch.enabled), @"webcamFormat":@(self.webcamFormat.enabled),
+            @"cameraMount":@(self.mountControl.enabled),
             @"shutterButton":@(self.shutterButton.enabled), @"focusPoint":@(self.captureAvailable) } };
 }
 
@@ -910,6 +984,8 @@ static NSString *M7RedactIPv4(NSString *text) {
         state[@"session"] = [self sessionDiagnostic];
         state[@"remoteServer"] = self.remoteServer.snapshot ?: @{};
         state[@"webcam"] = [self webcamSnapshot];
+        // Lets the Studio estimate the clock offset for X-Timestamp latency.
+        state[@"now"] = @(NSDate.date.timeIntervalSince1970);
         state[@"pairing"] = [self.pairingManager snapshot];
         state[@"openSSH"] = self.openSSHStatus ?: @{};
         completion(M7JSONSnapshot(state));
@@ -942,7 +1018,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.6", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.7", @"state":state });
             }];
         });
         return;
@@ -1102,6 +1178,23 @@ static NSString *M7RedactIPv4(NSString *text) {
         if (changed) [self changeWebcamFormat];
         return @{ @"control":control, @"value":text, @"changed":@(changed) };
     }
+    if ([control isEqual:@"cameraMount"]) {
+        if (self.webcamRequested || self.webcamEnabled || self.videoRecording || self.videoProcessing) {
+            if (error) *error = @"Pare a webcam e a gravação antes de alterar cameraMount.";
+            return nil;
+        }
+        NSInteger index = [text isEqual:@"landscape"] ? M7CameraMountLandscape :
+            [text isEqual:@"landscapeInverted"] ? M7CameraMountLandscapeInverted :
+            [text isEqual:@"portrait"] ? M7CameraMountPortrait : -1;
+        if (index < 0) {
+            if (error) *error = @"cameraMount aceita landscape, landscapeInverted ou portrait.";
+            return nil;
+        }
+        BOOL changed = self.mountControl.selectedSegmentIndex != index;
+        self.mountControl.selectedSegmentIndex = index;
+        if (changed) [self changeCameraMount];
+        return @{ @"control":control, @"value":text, @"changed":@(changed) };
+    }
     if ([control isEqual:@"tracking"]) {
         if (!number || !self.trackingSwitch.enabled) { if (error) *error = @"Tracking está indisponível agora."; return nil; }
         self.trackingSwitch.on = number.boolValue; [self changeTracking];
@@ -1217,7 +1310,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.6";
+    self.captureTrace[@"version"] = @"0.7.7";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1366,7 +1459,8 @@ static NSString *M7RedactIPv4(NSString *text) {
     ++self.exposureRevision; ++self.focusRevision;
     for (AVCaptureOutput *output in @[self.photoOutput, self.videoOutput]) {
         AVCaptureConnection *c = [output connectionWithMediaType:AVMediaTypeVideo];
-        if (c.isVideoOrientationSupported) c.videoOrientation = AVCaptureVideoOrientationPortrait;
+        if (c.isVideoOrientationSupported) c.videoOrientation = output == self.videoOutput ?
+            M7VideoOrientationForMount(self.cameraMount) : AVCaptureVideoOrientationPortrait;
         if (c.isVideoStabilizationSupported) c.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeOff;
     }
     // A new input recreates the data output connection, enabled by default.
@@ -1386,7 +1480,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
     diagnostic[@"rawCompatibility"] = rawCompatibility;
-    diagnostic[@"version"] = @"0.7.6";
+    diagnostic[@"version"] = @"0.7.7";
     self.lensDiagnostic = diagnostic;
     [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
@@ -1586,6 +1680,9 @@ static NSString *M7RedactIPv4(NSString *text) {
     NSDictionary *server = self.webcamServer.snapshot ?: @{};
     NSDictionary *lastError = self.lastWebcamError ?: @{};
     BOOL vertical = self.webcamVertical;
+    M7CameraMount mount = self.cameraMount;
+    NSProcessInfoThermalState thermal = NSProcessInfo.processInfo.thermalState;
+    CGSize h264Size = M7WebcamOutputSize(M7WebcamCodecH264, vertical, mount != M7CameraMountPortrait);
     double averageEncodeMilliseconds = self.webcamEncodedFrames ?
         self.webcamEncodeMillisecondsTotal / self.webcamEncodedFrames : 0;
     return @{ @"requested":@(self.webcamRequested), @"enabled":@(self.webcamEnabled),
@@ -1596,12 +1693,50 @@ static NSString *M7RedactIPv4(NSString *text) {
         @"captureModeRequired":@"video", @"captureModeActive":@(self.videoModeActive),
         @"usesCameraControls":@YES, @"trackingReframe":@(self.trackingEnabled),
         @"inputFrames":@(self.webcamInputFrames), @"encodedFrames":@(self.webcamEncodedFrames),
-        @"busyDrops":@(self.webcamBusyDrops),
+        @"busyDrops":@(self.webcamBusyDrops), @"screenKeptAwake":@(self.webcamHoldsIdleTimer),
+        @"cameraMount":M7CameraMountName(mount),
+        @"thermal":@{ @"state":M7ThermalName(thermal), @"maxFPS":@(M7ThermalMaxWebcamFPS(thermal)),
+            @"drops":@(self.webcamThermalDrops) },
         @"lastEncodeMilliseconds":@(self.webcamLastEncodeMilliseconds),
         @"averageEncodeMilliseconds":@(averageEncodeMilliseconds),
         @"lastError":lastError, @"server":server,
         @"encoder":@{ @"backend":self.webcamEncoder.backend ?: @"",
-            @"hardwareStatus":@(self.webcamEncoder.hardwareStatus) } };
+            @"hardwareStatus":@(self.webcamEncoder.hardwareStatus) },
+        @"codecs":self.webcamEncoder.h264Available ? @[@"mjpeg", @"h264"] : @[@"mjpeg"],
+        @"h264":@{ @"available":@(self.webcamEncoder.h264Available),
+            @"status":@(self.webcamEncoder.h264Status), @"route":@"/v1/webcam.h264",
+            @"width":@(h264Size.width), @"height":@(h264Size.height),
+            @"bitRate":@(M7WebcamH264BitRate(h264Size)) } };
+}
+
+// Main queue. Rotating the data output while a webcam client or the video
+// writer consumes it would change the frame size under them.
+- (void)changeCameraMount {
+    NSInteger index = self.mountControl.selectedSegmentIndex;
+    if (self.webcamRequested || self.webcamEnabled || self.videoRecording || self.videoProcessing ||
+        index < M7CameraMountLandscape || index > M7CameraMountPortrait) {
+        self.mountControl.selectedSegmentIndex = self.cameraMount;
+        [self message:@"Pare a webcam e a gravação antes de mudar a montagem."];
+        return;
+    }
+    M7CameraMount mount = (M7CameraMount)index;
+    if (mount == self.cameraMount) return;
+    self.cameraMount = mount;
+    [NSUserDefaults.standardUserDefaults setInteger:mount forKey:M7CameraMountDefaultsKey];
+    // The tracked center belongs to the previous buffer orientation.
+    self.trackingCenter = CGPointMake(.5, .5);
+    self.peakingView.image = nil;
+    [self updateReframeGuide];
+    dispatch_async(self.sessionQueue, ^{
+        AVCaptureConnection *connection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+        if (connection.isVideoOrientationSupported)
+            connection.videoOrientation = M7VideoOrientationForMount(mount);
+        [self recordSessionEvent:@"cameraMountChanged" details:@{ @"mount":M7CameraMountName(mount),
+            @"videoOrientation":@(connection.videoOrientation) }];
+    });
+    [self message:mount == M7CameraMountPortrait ? @"Montagem em retrato: 9:16 nativo." :
+        mount == M7CameraMountLandscape ? @"Montagem em paisagem, botão Home à direita: 16:9 nativo." :
+        @"Montagem em paisagem, botão Home à esquerda: 16:9 nativo."];
 }
 
 - (void)changeWebcamFormat {
@@ -1617,6 +1752,16 @@ static NSString *M7RedactIPv4(NSString *text) {
         vertical ? @"9:16" : @"16:9"]];
 }
 
+// Main queue only. Auto-lock resigns the Camera app, which stops the webcam,
+// so the screen stays awake while it streams; Camera's own value is restored.
+- (void)keepScreenAwakeForWebcam:(BOOL)awake {
+    if (awake == self.webcamHoldsIdleTimer) return;
+    UIApplication *application = UIApplication.sharedApplication;
+    if (awake) self.idleTimerWasDisabled = application.idleTimerDisabled;
+    application.idleTimerDisabled = awake || self.idleTimerWasDisabled;
+    self.webcamHoldsIdleTimer = awake;
+}
+
 - (void)failWebcamStartOnSessionQueue:(NSString *)reason error:(NSError *)error {
     self.webcamRequested = NO; self.webcamEnabled = NO;
     self.lastWebcamError = error ? M7ErrorDetails(error) : @{};
@@ -1626,6 +1771,7 @@ static NSString *M7RedactIPv4(NSString *text) {
         @"session":[self sessionDiagnostic] }];
     dispatch_async(dispatch_get_main_queue(), ^{
         self.webcamSwitch.on = NO;
+        [self keepScreenAwakeForWebcam:NO];
         [self enableControls:self.configured && self.session.isRunning];
         [self message:[NSString stringWithFormat:@"Webcam indisponível: %@",
             error.localizedDescription ?: @"o modo Vídeo não ficou pronto"]];
@@ -1643,6 +1789,7 @@ static NSString *M7RedactIPv4(NSString *text) {
         return;
     }
     self.webcamInputFrames = 0; self.webcamEncodedFrames = 0; self.webcamBusyDrops = 0;
+    self.webcamThermalDrops = 0;
     self.webcamEncodeMillisecondsTotal = 0; self.webcamLastEncodeMilliseconds = 0;
     self.lastWebcamTime = 0;
     dispatch_async(self.webcamQueue, ^{
@@ -1664,6 +1811,7 @@ static NSString *M7RedactIPv4(NSString *text) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!self.webcamRequested) return;
             self.webcamSwitch.on = ready;
+            [self keepScreenAwakeForWebcam:ready];
             [self enableControls:self.configured && self.session.isRunning];
             [self message:ready ? @"Webcam pronta em modo Vídeo a até 30 fps." :
                 [NSString stringWithFormat:@"Webcam indisponível: %@",
@@ -1677,6 +1825,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     self.webcamRequested = enabled;
     if (!enabled) {
         self.webcamEnabled = NO;
+        [self keepScreenAwakeForWebcam:NO];
         dispatch_async(self.webcamQueue, ^{
             [self.webcamServer stop];
             NSDictionary *snapshot = self.webcamServer.snapshot ?: @{};
@@ -1710,40 +1859,75 @@ static NSString *M7RedactIPv4(NSString *text) {
     });
 }
 
+- (void)recordWebcamEncodeError:(NSError *)error {
+    self.lastWebcamError = M7ErrorDetails(error);
+    CFTimeInterval errorNow = CACurrentMediaTime();
+    if (errorNow - self.lastWebcamErrorLogTime < 2) return;
+    self.lastWebcamErrorLogTime = errorNow;
+    dispatch_async(self.sessionQueue, ^{
+        [self recordSessionEvent:@"webcamEncodeError" details:M7ErrorDetails(error)];
+    });
+}
+
+// Encodes only what the connected clients asked for: JPEG for MJPEG clients,
+// H.264 for H.264 clients, both when both are attached.
 - (void)scheduleWebcamForSampleBuffer:(CMSampleBufferRef)sample {
     if (!self.webcamEnabled || self.webcamServer.clientCount == 0) return;
     ++self.webcamInputFrames;
     if (self.webcamEncoding) { ++self.webcamBusyDrops; return; }
+    CFTimeInterval now = CACurrentMediaTime();
+    double maxFPS = M7ThermalMaxWebcamFPS(NSProcessInfo.processInfo.thermalState);
+    // 2 ms of slack keeps a 33 ms camera cadence from skipping two frames in a row.
+    if (maxFPS > 0 && now - self.lastWebcamTime < 1.0 / maxFPS - .002) { ++self.webcamThermalDrops; return; }
     CVPixelBufferRef pixel = CMSampleBufferGetImageBuffer(sample);
     if (!pixel) return;
-    self.lastWebcamTime = CACurrentMediaTime(); self.webcamEncoding = YES;
+    self.lastWebcamTime = now; self.webcamEncoding = YES;
     BOOL vertical = self.webcamVertical;
     CGPoint center = self.trackingEnabled ? self.trackingCenter : CGPointMake(.5, .5);
+    CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sample);
+    BOOL landscapeSource = CVPixelBufferGetWidth(pixel) > CVPixelBufferGetHeight(pixel);
     CVPixelBufferRetain(pixel);
     dispatch_async(self.webcamQueue, ^{
         @autoreleasepool {
             CFTimeInterval encodeStarted = CACurrentMediaTime();
-            NSError *error = nil;
-            NSData *jpeg = [self.webcamEncoder JPEGDataForPixelBuffer:pixel vertical:vertical
-                normalizedCenter:center error:&error];
+            BOOL encoded = NO;
+            if ([self.webcamServer clientCountForCodec:M7WebcamCodecMJPEG]) {
+                NSError *error = nil;
+                NSData *jpeg = [self.webcamEncoder JPEGDataForPixelBuffer:pixel vertical:vertical
+                    normalizedCenter:center error:&error];
+                CGSize size = M7WebcamOutputSize(M7WebcamCodecMJPEG, vertical, landscapeSource);
+                if (jpeg.length && self.webcamEnabled) {
+                    encoded = YES;
+                    [self.webcamServer publishJPEG:jpeg width:(NSUInteger)size.width
+                        height:(NSUInteger)size.height];
+                } else if (error) [self recordWebcamEncodeError:error];
+            }
+            if ([self.webcamServer clientCountForCodec:M7WebcamCodecH264]) {
+                NSError *error = nil;
+                BOOL keyframe = NO;
+                NSData *accessUnit = [self.webcamEncoder H264AccessUnitForPixelBuffer:pixel
+                    vertical:vertical normalizedCenter:center presentationTime:presentationTime
+                    forceKeyframe:[self.webcamServer consumeKeyframeRequest]
+                    keyframe:&keyframe error:&error];
+                CGSize size = M7WebcamOutputSize(M7WebcamCodecH264, vertical, landscapeSource);
+                if (accessUnit.length && self.webcamEnabled) {
+                    encoded = YES;
+                    [self.webcamServer publishH264:accessUnit keyframe:keyframe
+                        width:(NSUInteger)size.width height:(NSUInteger)size.height];
+                } else if (error) {
+                    [self recordWebcamEncodeError:error];
+                    // Clients fall back to MJPEG once the stream closes.
+                    if (!self.webcamEncoder.h264Available)
+                        [self.webcamServer closeClientsForCodec:M7WebcamCodecH264];
+                }
+            }
             CVPixelBufferRelease(pixel);
             double encodeMilliseconds = (CACurrentMediaTime() - encodeStarted) * 1000.0;
             self.webcamLastEncodeMilliseconds = encodeMilliseconds;
-            if (jpeg.length && self.webcamEnabled) {
+            if (encoded) {
                 self.lastWebcamError = @{};
                 ++self.webcamEncodedFrames;
                 self.webcamEncodeMillisecondsTotal += encodeMilliseconds;
-                [self.webcamServer publishJPEG:jpeg width:vertical ? 720 : 1280
-                    height:vertical ? 1280 : 720];
-            } else if (error) {
-                self.lastWebcamError = M7ErrorDetails(error);
-                CFTimeInterval errorNow = CACurrentMediaTime();
-                if (errorNow - self.lastWebcamErrorLogTime >= 2) {
-                    self.lastWebcamErrorLogTime = errorNow;
-                    dispatch_async(self.sessionQueue, ^{
-                        [self recordSessionEvent:@"webcamEncodeError" details:M7ErrorDetails(error)];
-                    });
-                }
             }
             self.webcamEncoding = NO;
         }
@@ -1845,7 +2029,8 @@ static NSString *M7RedactIPv4(NSString *text) {
     if (selected) [self.session startRunning];
     [self updateVideoOutputDemand];
     AVCaptureConnection *videoConnection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
-    if (videoConnection.isVideoOrientationSupported) videoConnection.videoOrientation = AVCaptureVideoOrientationPortrait;
+    if (videoConnection.isVideoOrientationSupported)
+        videoConnection.videoOrientation = M7VideoOrientationForMount(self.cameraMount);
     [self recordSessionEvent:@"captureModeConfigured" details:@{@"video":@(video), @"audio":@(audioAdded),
         @"success":@(selected), @"videoFormat":self.videoFormatDiagnostic ?: @{}, @"error":M7ErrorDetails(error),
         @"audioError":M7ErrorDetails(audioError),
@@ -1884,6 +2069,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     self.trackingSwitch.enabled = ready && self.videoModeActive && !changingTopology;
     self.webcamSwitch.enabled = ready && !changingTopology;
     self.webcamFormat.enabled = ready && !self.webcamRequested && !self.webcamEnabled;
+    self.mountControl.enabled = ready && !changingTopology && !self.webcamRequested && !self.webcamEnabled;
     self.pairButton.enabled = ready && !changingTopology && !self.pairingSubmitting;
     self.lens.enabled = ready && !changingTopology;
     self.exposureMode.enabled = ready; self.focusMode.enabled = ready;
@@ -2135,7 +2321,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.6";
+    self.videoTrace[@"version"] = @"0.7.7";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -2852,7 +3038,7 @@ static NSString *M7RedactIPv4(NSString *text) {
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.6", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.7", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
@@ -2889,7 +3075,7 @@ static NSString *M7RedactIPv4(NSString *text) {
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.6", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.7", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:revealed ? @"Copiar diagnóstico com IPs" : @"Copiar diagnóstico"
@@ -2940,7 +3126,7 @@ static NSString *M7RedactIPv4(NSString *text) {
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.6" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.7" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];
@@ -3174,7 +3360,8 @@ static NSString *M7RedactIPv4(NSString *text) {
         CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
         CGImageRef cg = CGImageCreate(w, h, 8, 32, w*4, space,
             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big, provider, NULL, false, kCGRenderingIntentDefault);
-        UIImage *image = cg ? [UIImage imageWithCGImage:cg] : nil;
+        UIImage *image = cg ? [UIImage imageWithCGImage:cg scale:1
+            orientation:M7PreviewImageOrientation(self.cameraMount)] : nil;
         if (cg) CGImageRelease(cg);
         CGColorSpaceRelease(space); CGDataProviderRelease(provider);
         self.overlayPending = YES;
@@ -3194,6 +3381,18 @@ static NSString *M7RedactIPv4(NSString *text) {
 - (void)notification:(NSNotification *)note {
     if ([note.name hasPrefix:@"AVCaptureSession"] && note.object != self.session) return;
     if (self.closing) return;
+    if ([note.name isEqualToString:NSProcessInfoThermalStateDidChangeNotification]) {
+        NSProcessInfoThermalState thermal = NSProcessInfo.processInfo.thermalState;
+        double maxFPS = M7ThermalMaxWebcamFPS(thermal);
+        dispatch_async(self.sessionQueue, ^{
+            [self recordSessionEvent:@"thermalStateChanged" details:@{ @"state":M7ThermalName(thermal),
+                @"webcamMaxFPS":@(maxFPS), @"webcamEnabled":@(self.webcamEnabled) }];
+        });
+        if (self.webcamEnabled) [self message:maxFPS > 0 ?
+            [NSString stringWithFormat:@"iPhone quente: webcam limitada a %.0f fps.", maxFPS] :
+            @"Temperatura normal: webcam de volta a 30 fps."];
+        return;
+    }
     if ([note.name isEqualToString:UIApplicationWillResignActiveNotification]) {
         self.peakingView.image = nil;
         [self cancelPairing:@"applicationBackground"];
@@ -3321,6 +3520,7 @@ static NSString *M7RedactIPv4(NSString *text) {
         [self.audioOutput setSampleBufferDelegate:nil queue:NULL];
         [self endVideoBackgroundTask];
         dispatch_async(dispatch_get_main_queue(), ^{
+            [self keepScreenAwakeForWebcam:NO];
             [self.timer invalidate]; self.peakingEnabled = NO;
             [self dismissViewControllerAnimated:YES completion:^{
                 BOOL foreground = UIApplication.sharedApplication.applicationState == UIApplicationStateActive;

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -216,15 +217,24 @@ def wait_for_pairing(server: http.server.HTTPServer, state: PairingState, timeou
     return state.result
 
 
+def usb_ssh_options() -> list[str]:
+    """Reaches sshd through the USB cable with manual7_remote.py usb-proxy."""
+    remote = Path(__file__).resolve().with_name("manual7_remote.py")
+    proxy = " ".join(shlex.quote(part) for part in (sys.executable, str(remote), "usb-proxy", "%p"))
+    return ["-o", f"ProxyCommand={proxy}", "-o", "HostKeyAlias=manual7-usb"]
+
+
 def ssh_command(peer_ip: str, result: dict[str, Any], args: argparse.Namespace) -> list[str]:
     port = args.ssh_port or int(result["preferredSSHPort"])
+    usb = getattr(args, "usb", False)
     return [
         "ssh", "-N", "-p", str(port),
+        *(usb_ssh_options() if usb else []),
         "-o", "ExitOnForwardFailure=yes",
         "-o", "StrictHostKeyChecking=accept-new",
         "-L", f"127.0.0.1:{args.local_port}:127.0.0.1:{result['apiBridgePort']}",
         "-L", f"127.0.0.1:{args.webcam_local_port}:127.0.0.1:{result['webcamBridgePort']}",
-        f"{args.user}@{peer_ip}",
+        f"{args.user}@{'manual7-usb' if usb else peer_ip}",
     ]
 
 
@@ -240,6 +250,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--local-port", type=int, default=17837)
     result.add_argument("--webcam-local-port", type=int, default=17838)
     result.add_argument("--no-tunnel", action="store_true", help="valida o retorno sem iniciar SSH")
+    result.add_argument("--usb", action="store_true",
+                        help="abre os túneis pelo cabo USB (usbmuxd); o QR continua pelo Wi-Fi")
     return result
 
 

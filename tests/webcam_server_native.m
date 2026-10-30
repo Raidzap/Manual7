@@ -74,9 +74,35 @@ int main(void) {
         assert([snapshot[@"lastWidth"] integerValue] == 1280);
         assert([snapshot[@"lastHeight"] integerValue] == 720);
         assert([snapshot[@"unixSocketPermissions"] isEqual:@"0600"]);
+        // H.264: a joining client waits for a keyframe, which it requests.
+        int video = ConnectUnix(path);
+        SendRequest(video, @"GET /v1/webcam.h264 HTTP/1.1\r\nHost: localhost\r\nX-Manual7-PIN: 123456\r\n\r\n");
+        for (NSUInteger retry = 0; retry < 100 && [server clientCountForCodec:M7WebcamCodecH264] != 1; ++retry)
+            usleep(10000);
+        assert([server clientCountForCodec:M7WebcamCodecH264] == 1);
+        assert([server consumeKeyframeRequest] && ![server consumeKeyframeRequest]);
+        const uint8_t deltaBytes[] = {0, 0, 0, 1, 0x41, 0xaa, 0xbb};
+        const uint8_t keyBytes[] = {0, 0, 0, 1, 0x67, 0x64, 0, 0, 0, 1, 0x68, 0xee, 0, 0, 0, 1, 0x65, 0x88};
+        NSData *delta = [NSData dataWithBytes:deltaBytes length:sizeof(deltaBytes)];
+        NSData *key = [NSData dataWithBytes:keyBytes length:sizeof(keyBytes)];
+        [server publishH264:delta keyframe:NO width:1080 height:1920];
+        [server publishH264:key keyframe:YES width:1080 height:1920];
+        [server publishH264:delta keyframe:NO width:1080 height:1920];
+        for (NSUInteger retry = 0; retry < 100 && [server.snapshot[@"h264"][@"framesPublished"] integerValue] != 2;
+             ++retry) usleep(10000);
+        NSData *videoStream = ReadAvailable(video); close(video);
+        NSString *videoText = [[NSString alloc] initWithData:videoStream encoding:NSISOLatin1StringEncoding];
+        assert([videoText containsString:@"Content-Type: video/h264"]);
+        NSRange firstKeyframe = [videoText rangeOfString:@"X-Keyframe: 1"];
+        assert(firstKeyframe.location != NSNotFound);
+        assert([videoText rangeOfString:@"X-Keyframe: 0"].location > firstKeyframe.location);
+        assert([videoText rangeOfString:@"X-Keyframe: 0"].location != NSNotFound);
+        NSDictionary *h264 = server.snapshot[@"h264"];
+        assert([h264[@"framesPublished"] integerValue] == 2);
+        assert([h264[@"keyframesPublished"] integerValue] == 1);
         [server stop]; assert(!server.running);
         assert(lstat(path.fileSystemRepresentation, &info) != 0 && errno == ENOENT);
-        puts("Webcam server: Unix socket, 0600, PIN, multipart MJPEG, counters and cleanup passed.");
+        puts("Webcam server: Unix socket, 0600, PIN, multipart MJPEG and H.264, counters and cleanup passed.");
     }
     return 0;
 }

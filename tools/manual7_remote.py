@@ -6,10 +6,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
+import shlex
 import shutil
 import socket
+import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -23,6 +27,8 @@ DEFAULT_WEBCAM_URL = "http://127.0.0.1:17838/v1/webcam.mjpg"
 DEFAULT_WEBCAM_SOCKET = "/var/tmp/Manual7-webcam.sock"
 DEFAULT_REMOTE_PORT = 27839
 DEFAULT_WEBCAM_REMOTE_PORT = 27840
+USBMUXD_SOCKET = "/var/run/usbmuxd"
+USB_HOST_ALIAS = "manual7-usb"
 
 
 class RemoteError(RuntimeError):
@@ -94,6 +100,108 @@ def choose_ssh_port(host: str, requested: int | None, timeout: float = 1.5) -> i
     raise OSError(f"OpenSSH não respondeu em {host} nas portas 22 ou 2222 ({'; '.join(failures)})")
 
 
+def usbmux_address() -> tuple[int, Any]:
+    value = os.environ.get("USBMUXD_SOCKET_ADDRESS", "")
+    if value.startswith("UNIX:"):
+        return socket.AF_UNIX, value[5:]
+    if ":" in value:
+        host, port = value.rsplit(":", 1)
+        return socket.AF_INET, (host, int(port))
+    return socket.AF_UNIX, USBMUXD_SOCKET
+
+
+def usbmux_exchange(message: dict[str, Any],
+                    timeout: float = 2.0) -> tuple[dict[str, Any], socket.socket, bytes]:
+    """Sends one plist request to usbmuxd; returns the reply, the socket and
+    any bytes that followed the reply (the start of a Connect tunnel)."""
+    family, address = usbmux_address()
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sock.connect(address)
+        payload = plistlib.dumps({"ClientVersionString": "manual7_remote",
+                                  "ProgName": "manual7_remote", **message})
+        sock.sendall(struct.pack("<IIII", 16 + len(payload), 1, 8, 1) + payload)
+        buffer = b""
+        while len(buffer) < 16 or len(buffer) < struct.unpack_from("<I", buffer)[0]:
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise OSError("usbmuxd encerrou a conexão")
+            buffer += chunk
+            if len(buffer) >= 16 and not 16 <= struct.unpack_from("<I", buffer)[0] <= 1 << 20:
+                raise OSError("resposta inválida do usbmuxd")
+        length = struct.unpack_from("<I", buffer)[0]
+        reply = plistlib.loads(buffer[16:length])
+        sock.settimeout(None)
+        return reply, sock, buffer[length:]
+    except BaseException:
+        sock.close()
+        raise
+
+
+def usb_devices() -> list[dict[str, Any]]:
+    reply, sock, _ = usbmux_exchange({"MessageType": "ListDevices"})
+    sock.close()
+    return [entry.get("Properties", {}) for entry in reply.get("DeviceList", [])
+            if entry.get("Properties", {}).get("ConnectionType") == "USB"]
+
+
+def usb_connect(port: int) -> tuple[socket.socket, bytes]:
+    """Opens a TCP connection to `port` on the only iPhone attached by USB."""
+    try:
+        devices = usb_devices()
+    except OSError as exc:
+        raise OSError(f"usbmuxd indisponível ({exc}); instale o pacote usbmuxd") from exc
+    if len(devices) != 1:
+        raise OSError(f"conecte exatamente um iPhone por USB (encontrados: {len(devices)})")
+    # usbmuxd expects the port in network byte order inside a host integer.
+    swapped = ((port & 0xff) << 8) | ((port >> 8) & 0xff)
+    reply, sock, extra = usbmux_exchange({"MessageType": "Connect",
+                                          "DeviceID": devices[0]["DeviceID"],
+                                          "PortNumber": swapped})
+    if reply.get("MessageType") != "Result" or reply.get("Number") != 0:
+        sock.close()
+        raise OSError(f"o iPhone recusou a conexão USB na porta {port} "
+                      f"(usbmuxd {reply.get('Number', '?')})")
+    return sock, extra
+
+
+def usb_proxy(port: int) -> int:
+    """Relays stdin/stdout to the iPhone over USB, for ssh's ProxyCommand."""
+    sock, extra = usb_connect(port)
+    if extra:
+        os.write(1, extra)
+
+    def upload() -> None:
+        try:
+            while chunk := os.read(0, 65536):
+                sock.sendall(chunk)
+        except OSError:
+            pass
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    threading.Thread(target=upload, daemon=True).start()
+    try:
+        while chunk := sock.recv(65536):
+            os.write(1, chunk)
+    except OSError:
+        return 1
+    finally:
+        sock.close()
+    return 0
+
+
+def usb_ssh_options() -> list[str]:
+    """ssh options that reach the iPhone through usb-proxy. A separate host
+    key alias keeps the USB entry apart from the Wi-Fi address in known_hosts."""
+    proxy = " ".join(shlex.quote(part) for part in
+                     (sys.executable, str(Path(__file__).resolve()), "usb-proxy", "%p"))
+    return ["-o", f"ProxyCommand={proxy}", "-o", f"HostKeyAlias={USB_HOST_ALIAS}"]
+
+
 def tunnel_forwarding(local_port: int, remote_socket: str,
                       remote_port: int | None = None) -> str:
     if local_port < 1 or local_port > 65535:
@@ -118,6 +226,69 @@ def webcam_ffmpeg_command(executable: str, webcam_url: str, pin: str,
             "-an", "-vf", "zscale=iw:ih:in_range=full:out_range=limited:filter=bilinear,format=yuv420p",
             "-color_range", "tv", "-fps_mode", "passthrough",
             "-f", "v4l2", str(device)]
+
+
+def webcam_h264_ffmpeg_command(executable: str, device: Path) -> list[str]:
+    """FFmpeg reading Annex-B H.264 on stdin. The iPhone already sends
+    limited-range BT.709 4:2:0, so no range conversion is needed."""
+    return [executable, "-hide_banner", "-loglevel", "warning",
+            "-fflags", "nobuffer+discardcorrupt", "-flags", "low_delay",
+            "-probesize", "262144", "-analyzeduration", "200000",
+            "-use_wallclock_as_timestamps", "1",
+            "-f", "h264", "-i", "pipe:0",
+            "-an", "-pix_fmt", "yuv420p", "-color_range", "tv", "-fps_mode", "passthrough",
+            "-f", "v4l2", str(device)]
+
+
+def h264_url(webcam_url: str) -> str:
+    return webcam_url[:-len(".mjpg")] + ".h264" if webcam_url.endswith(".mjpg") else webcam_url
+
+
+def pump_h264(stream: Any, sink: Any) -> None:
+    """Copies the Annex-B bodies of the multipart H.264 stream, starting at a
+    keyframe, until either side closes."""
+    waiting = True
+    while True:
+        line = stream.readline()
+        if not line:
+            return
+        if not line.startswith(b"--"):
+            continue
+        headers: dict[str, str] = {}
+        while True:
+            line = stream.readline()
+            if not line:
+                return
+            if line in (b"\r\n", b"\n"):
+                break
+            key, _, value = line.decode("latin-1").partition(":")
+            headers[key.strip().lower()] = value.strip()
+        length = int(headers.get("content-length", "0"))
+        body = stream.read(length)
+        if len(body) < length:
+            return
+        if waiting and headers.get("x-keyframe", "1") == "0":
+            continue
+        waiting = False
+        sink.write(body)
+        sink.flush()
+
+
+def feed_h264(executable: str, webcam_url: str, pin: str, device: Path) -> int:
+    process = subprocess.Popen(webcam_h264_ffmpeg_command(executable, device),
+                               stdin=subprocess.PIPE)
+    req = urllib.request.Request(h264_url(webcam_url), headers={"X-Manual7-PIN": pin})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            pump_h264(response, process.stdin)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+    return process.wait()
 
 
 def wait_webcam(webcam_url: str, pin: str, timeout: float = 10) -> None:
@@ -159,6 +330,8 @@ def build_parser() -> argparse.ArgumentParser:
     feed.add_argument("--webcam-url",
                       default=os.environ.get("MANUAL7_WEBCAM_URL", DEFAULT_WEBCAM_URL))
     feed.add_argument("--ffmpeg", default="ffmpeg")
+    feed.add_argument("--codec", choices=("auto", "h264", "mjpeg"), default="auto",
+                      help="auto usa H.264 quando o M7 oferece /v1/webcam.h264, senão MJPEG.")
     feed.add_argument("--keep-enabled", action="store_true",
                       help="Mantém a saída M7 ativa quando o FFmpeg termina.")
     setting = sub.add_parser("set", help="Altera um controle do M7.")
@@ -169,8 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("close", help="Fecha o painel M7 após responder.")
     watch = sub.add_parser("watch", help="Atualiza o estado continuamente.")
     watch.add_argument("--interval", type=float, default=1.0)
+    proxy = sub.add_parser("usb-proxy",
+                           help="Ponte stdin/stdout para uma porta do iPhone pelo USB "
+                                "(ProxyCommand do ssh).")
+    proxy.add_argument("port", type=int)
     tunnel = sub.add_parser("tunnel", help="Abre o encaminhamento SSH para o iPhone.")
-    tunnel.add_argument("host", help="IP ou nome do iPhone.")
+    tunnel.add_argument("host", nargs="?", help="IP ou nome do iPhone (dispensado com --usb).")
+    tunnel.add_argument("--usb", action="store_true",
+                        help="Conecta pelo cabo USB via usbmuxd em vez do Wi-Fi.")
     tunnel.add_argument("--user", default="mobile")
     tunnel.add_argument("--ssh-port", type=int,
                         help="Porta SSH explícita; sem esta opção, testa 22 e 2222.")
@@ -189,9 +368,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.subcommand == "tunnel":
+    if args.subcommand == "usb-proxy":
         try:
-            ssh_port = choose_ssh_port(args.host, args.ssh_port)
+            return usb_proxy(args.port)
+        except OSError as exc:
+            print(f"Manual7: {exc}", file=sys.stderr)
+            return 1
+    if args.subcommand == "tunnel":
+        if not args.usb and not args.host:
+            print("Manual7: informe o IP do iPhone ou use --usb.", file=sys.stderr)
+            return 2
+        try:
+            if args.usb:
+                ssh_port = args.ssh_port or 22
+                usb_connect(ssh_port)[0].close()
+            else:
+                ssh_port = choose_ssh_port(args.host, args.ssh_port)
             forwarding = tunnel_forwarding(args.local_port, args.remote_socket, args.remote_port)
             webcam_forwarding = tunnel_forwarding(args.webcam_local_port,
                                                    args.webcam_remote_socket,
@@ -199,13 +391,15 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"Manual7: {exc}", file=sys.stderr)
             return 1
-        target = f"{args.user}@{args.host}"
+        target = f"{args.user}@{USB_HOST_ALIAS if args.usb else args.host}"
         destination = f"127.0.0.1:{args.remote_port}" if args.remote_port else args.remote_socket
         print(f"API http://127.0.0.1:{args.local_port} → {target}:{destination}", file=sys.stderr)
         webcam_destination = f"127.0.0.1:{args.webcam_remote_port}"
         print(f"Webcam http://127.0.0.1:{args.webcam_local_port}/v1/webcam.mjpg "
-              f"→ {target}:{webcam_destination} via SSH {ssh_port}", file=sys.stderr)
+              f"→ {target}:{webcam_destination} via SSH {ssh_port}"
+              f"{' por USB' if args.usb else ''}", file=sys.stderr)
         return subprocess.call(["ssh", "-p", str(ssh_port), "-N",
+                                *(usb_ssh_options() if args.usb else []),
                                 "-L", forwarding, "-L", webcam_forwarding,
                                 "-o", "ExitOnForwardFailure=yes",
                                 "-o", "StrictHostKeyChecking=accept-new", target])
@@ -245,12 +439,22 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             started = False
             try:
+                codec = args.codec
+                if codec == "auto":
+                    state = request(args.url, args.pin, "GET", "/v1/state")
+                    state = state.get("state", state)
+                    available = state.get("webcam", {}).get("h264", {}).get("available") is True
+                    codec = "h264" if available else "mjpeg"
                 command(args.url, args.pin, "webcam.stop")
                 command(args.url, args.pin, "set", control="webcamFormat", value=args.format)
                 command(args.url, args.pin, "webcam.start")
                 started = True
-                wait_webcam(args.webcam_url, args.pin)
-                print(f"Manual7 {args.format} → {args.device}; Ctrl+C encerra.", file=sys.stderr)
+                webcam_url = h264_url(args.webcam_url) if codec == "h264" else args.webcam_url
+                wait_webcam(webcam_url, args.pin)
+                print(f"Manual7 {args.format} {codec.upper()} → {args.device}; Ctrl+C encerra.",
+                      file=sys.stderr)
+                if codec == "h264":
+                    return feed_h264(executable, args.webcam_url, args.pin, args.device)
                 return subprocess.call(webcam_ffmpeg_command(executable, args.webcam_url,
                                                              args.pin, args.device))
             finally:

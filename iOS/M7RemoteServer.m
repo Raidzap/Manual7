@@ -198,9 +198,13 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
                 received += (NSUInteger)count;
             }
             if (received == sizeof(activation) &&
-                memcmp(activation, M7BridgeActivation, sizeof(activation)) == 0)
+                memcmp(activation, M7BridgeActivation, sizeof(activation)) == 0) {
+                // Idle workers wait indefinitely for activation; once a client is
+                // attached, a stalled request must not hold this serial worker.
+                struct timeval receiveTimeout = {.tv_sec = 3, .tv_usec = 0};
+                setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, sizeof(receiveTimeout));
                 [owner handleClient:client];
-            else close(client);
+            } else close(client);
             @synchronized (owner) { [owner.bridgeSockets removeObject:@(client)]; }
             client = -1;
         }
@@ -472,7 +476,7 @@ static NSString *M7RemoteHTTPReason(NSInteger status) {
         @synchronized (self) { ++self.acceptedRequests; self.lastRequestAt = NSDate.date.timeIntervalSince1970; }
         NSString *path = request[@"path"];
         if ([path isEqual:@"/v1/ping"]) {
-            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.7.6",
+            [self sendStatus:200 body:@{ @"ok":@YES, @"name":@"Manual7", @"version":@"0.7.7",
                 @"transport":self.transport ?: @"", @"port":@(self.port),
                 @"authentication":@"X-Manual7-PIN" } socket:client];
             return;

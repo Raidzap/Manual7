@@ -116,6 +116,16 @@ class PairingCLITests(unittest.TestCase):
         self.assertIn("StrictHostKeyChecking=accept-new", command)
         self.assertEqual(command[-1], "mobile@192.168.1.50")
 
+    def test_ssh_command_over_usb_uses_remote_usb_proxy(self):
+        args = argparse.Namespace(ssh_port=None, local_port=17837,
+                                  webcam_local_port=17838, user="mobile", usb=True)
+        command = PAIR.ssh_command("192.168.1.50", self.payload(), args)
+        proxy = next(value for value in command if value.startswith("ProxyCommand="))
+        self.assertIn("manual7_remote.py", proxy)
+        self.assertIn("usb-proxy %p", proxy)
+        self.assertIn("HostKeyAlias=manual7-usb", command)
+        self.assertEqual(command[-1], "mobile@manual7-usb")
+
     def test_qrencode_arguments_do_not_use_a_shell(self):
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.object(PAIR.shutil, "which", return_value="/usr/bin/qrencode"), \

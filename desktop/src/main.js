@@ -19,6 +19,8 @@ const {
   validatePairingPayload,
   timingSafeToken
 } = require("./lib/protocol");
+const { StreamFanout, httpSink } = require("./lib/multipart");
+const { openUsbConnection } = require("./lib/usbmux");
 
 const PAIRING_PATH = "/v1/pair";
 const PAIRING_TIMEOUT_MS = 120_000;
@@ -131,7 +133,11 @@ class Manual7Session {
     this.previewServer = null;
     this.previewPort = 0;
     this.previewToken = "";
-    this.previewStreams = new Set();
+    this.previewFanout = null;
+    this.previewCodec = "mjpeg";
+    this.rendererFrames = null;
+    this.transport = "";
+    this.resetLatency();
     this.pendingFingerprint = "";
     this.connectedFingerprint = "";
     this.ffmpeg = null;
@@ -254,46 +260,31 @@ class Manual7Session {
     const port = this.pairing.preferredSSHPort;
     const remembered = await this.knownFingerprint(host, port);
     const trusted = acceptedFingerprint || remembered;
-    const client = new Client();
-    this.ssh = client;
     this.pendingFingerprint = "";
-    try {
-      await new Promise((resolve, reject) => {
-        let settled = false;
-        const finish = (callback, value) => {
-          if (settled) return;
-          settled = true;
-          callback(value);
-        };
-        client.on("keyboard-interactive", (_name, _instructions, _language, prompts, done) => {
-          done(prompts.map(() => password));
-        });
-        client.once("ready", () => finish(resolve));
-        client.once("error", (error) => finish(reject, error));
-        client.once("close", () => {
-          if (!settled) finish(reject, new Error("A conexão SSH foi encerrada durante a autenticação."));
-        });
-        client.connect({
-          host, port, username: "mobile", password, tryKeyboard: true,
-          readyTimeout: 15_000,
-          hostVerifier: (key) => {
-            const fingerprint = this.fingerprintForKey(key);
-            this.pendingFingerprint = fingerprint;
-            const actual = Buffer.from(fingerprint);
-            const expected = Buffer.from(trusted);
-            return Boolean(trusted) && actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
-          }
-        });
-      });
-    } catch (error) {
-      const fingerprint = this.pendingFingerprint;
-      client.end();
-      this.ssh = null;
-      if (fingerprint && !trusted) return { ok: false, trustRequired: true, fingerprint, host, port };
-      if (fingerprint && trusted && fingerprint !== trusted)
-        throw new Error("A chave SSH do iPhone mudou. Remova a chave conhecida antes de continuar.");
-      throw new Error(`Falha SSH: ${error.level === "client-authentication" ? "senha incorreta ou autenticação recusada" : error.message}`);
+    let client = null;
+    let transport = "wifi";
+    // The cable gives stable latency and keeps the iPhone charging. The host
+    // key is the same sshd on either path, so the remembered fingerprint still
+    // proves it is the paired phone; anything but a wrong password falls back
+    // to Wi-Fi.
+    const usb = await openUsbConnection(port).catch(() => null);
+    if (usb) {
+      try {
+        client = await this.sshHandshake({ sock: usb.socket }, password, trusted);
+        transport = "usb";
+      } catch (error) {
+        usb.socket.destroy();
+        if (error.level === "client-authentication" || (this.pendingFingerprint && !trusted))
+          return this.sshFailure(error, trusted, host, port);
+        this.pendingFingerprint = "";
+      }
     }
+    if (!client) {
+      try { client = await this.sshHandshake({ host, port }, password, trusted); }
+      catch (error) { return this.sshFailure(error, trusted, host, port); }
+    }
+    this.ssh = client;
+    this.transport = transport;
     this.connectedFingerprint = this.pendingFingerprint;
     if (!remembered || remembered !== this.connectedFingerprint)
       await this.rememberFingerprint(host, port, this.connectedFingerprint);
@@ -301,9 +292,51 @@ class Manual7Session {
     client.on("error", (error) => emit("connection-error", { message: error.message }));
     await this.startForwarders();
     const ping = await this.apiRequest("GET", "/v1/ping", null, false);
-    emit("connected", { host, port, version: ping.version || this.pairing.version });
-    return { ok: true, host, port, version: ping.version || this.pairing.version,
+    emit("connected", { host, port, transport, version: ping.version || this.pairing.version });
+    return { ok: true, host, port, transport, version: ping.version || this.pairing.version,
       previewUrl: this.previewURL() };
+  }
+
+  // Resolves with a ready ssh2 client; pendingFingerprint holds the key seen.
+  sshHandshake(target, password, trusted) {
+    const client = new Client();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        callback(value);
+      };
+      client.on("keyboard-interactive", (_name, _instructions, _language, prompts, done) => {
+        done(prompts.map(() => password));
+      });
+      client.once("ready", () => finish(resolve, client));
+      client.once("error", (error) => { client.end(); finish(reject, error); });
+      client.once("close", () => {
+        if (!settled) finish(reject, new Error("A conexão SSH foi encerrada durante a autenticação."));
+      });
+      client.connect({
+        ...target, username: "mobile", password, tryKeyboard: true,
+        readyTimeout: 15_000,
+        // Wi-Fi drops otherwise leave the virtual camera frozen until TCP gives up.
+        keepaliveInterval: 5_000, keepaliveCountMax: 3,
+        hostVerifier: (key) => {
+          const fingerprint = this.fingerprintForKey(key);
+          this.pendingFingerprint = fingerprint;
+          const actual = Buffer.from(fingerprint);
+          const expected = Buffer.from(trusted);
+          return Boolean(trusted) && actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+        }
+      });
+    });
+  }
+
+  sshFailure(error, trusted, host, port) {
+    const fingerprint = this.pendingFingerprint;
+    if (fingerprint && !trusted) return { ok: false, trustRequired: true, fingerprint, host, port };
+    if (fingerprint && trusted && fingerprint !== trusted)
+      throw new Error("A chave SSH do iPhone mudou. Remova a chave conhecida antes de continuar.");
+    throw new Error(`Falha SSH: ${error.level === "client-authentication" ? "senha incorreta ou autenticação recusada" : error.message}`);
   }
 
   makeForwarder(remotePort) {
@@ -330,42 +363,115 @@ class Manual7Session {
     this.apiPort = (await listen(this.apiForward)).port;
     this.webcamPort = (await listen(this.webcamForward)).port;
     this.previewToken = crypto.randomBytes(24).toString("base64url");
+    this.resetLatency();
+    this.previewFanout = new StreamFanout((onResponse) => {
+      const upstream = http.request({
+        host: "127.0.0.1", port: this.webcamPort, method: "GET",
+        path: this.previewCodec === "h264" ? "/v1/webcam.h264" : "/v1/webcam.mjpg",
+        headers: { "X-Manual7-PIN": this.pairing.pin }, timeout: 8_000
+      }, onResponse);
+      upstream.on("timeout", () => upstream.destroy(new Error("Timeout do preview")));
+      upstream.end();
+      return upstream;
+    }, { onPart: (part) => this.notePartLatency(part) });
     this.previewServer = http.createServer((request, response) => this.handlePreview(request, response));
     this.previewPort = (await listen(this.previewServer)).port;
   }
 
-  previewURL() {
+  previewURL(kind = "mjpg") {
     return this.previewPort && this.previewToken
-      ? `http://127.0.0.1:${this.previewPort}/preview.mjpg?token=${encodeURIComponent(this.previewToken)}`
+      ? `http://127.0.0.1:${this.previewPort}/preview.${kind}?token=${encodeURIComponent(this.previewToken)}`
       : "";
   }
 
   handlePreview(request, response) {
     let url;
     try { url = new URL(request.url, "http://127.0.0.1"); } catch { response.destroy(); return; }
-    if (request.method !== "GET" || url.pathname !== "/preview.mjpg" ||
+    const raw = url.pathname === "/preview.h264";
+    if (request.method !== "GET" || (url.pathname !== "/preview.mjpg" && !raw) ||
         !timingSafeToken(this.previewToken, url.searchParams.get("token"))) {
       response.writeHead(403); response.end(); return;
     }
-    const upstream = http.request({
-      host: "127.0.0.1", port: this.webcamPort, path: "/v1/webcam.mjpg", method: "GET",
-      headers: { "X-Manual7-PIN": this.pairing.pin }, timeout: 8_000
-    }, (incoming) => {
-      if (incoming.statusCode !== 200) {
-        response.writeHead(incoming.statusCode || 502); response.end(); incoming.resume(); return;
+    if (!this.previewFanout) { response.writeHead(503); response.end(); return; }
+    // The Studio preview and FFmpeg share one iPhone stream: a second
+    // upstream would double the Wi-Fi/SSH load and the A10's send work.
+    this.previewFanout.subscribe(httpSink(response, raw ? "raw" : "multipart"));
+  }
+
+  resetLatency() {
+    this.clockSamples = [];
+    this.clockOffset = null;
+    this.latency = { lastMs: 0, averageMs: 0, samples: 0 };
+  }
+
+  // Phone-to-PC delay of each part: X-Timestamp is the iPhone wall clock when
+  // the part was sent, corrected by the estimated clock offset. It covers
+  // Wi-Fi/USB, SSH and the bridges, not the encode before it nor the decode after.
+  notePartLatency(part) {
+    if (!part.timestamp || this.clockOffset === null) return;
+    const milliseconds = (Date.now() / 1000 - (part.timestamp - this.clockOffset)) * 1000;
+    if (!Number.isFinite(milliseconds) || milliseconds < -1000 || milliseconds > 60_000) return;
+    const latency = this.latency;
+    latency.lastMs = milliseconds;
+    latency.averageMs = latency.samples ? latency.averageMs * 0.9 + milliseconds * 0.1 : milliseconds;
+    ++latency.samples;
+  }
+
+  // GET /v1/state plus the Studio's own measurements. Each poll is a clock
+  // sample; the one with the shortest round trip bounds the offset error by
+  // half of that round trip.
+  async remoteState() {
+    const started = Date.now() / 1000;
+    const envelope = await this.apiRequest("GET", "/v1/state");
+    const finished = Date.now() / 1000;
+    const state = envelope.state || envelope;
+    const phoneNow = Number(state.now);
+    let best = null;
+    if (phoneNow > 0) {
+      this.clockSamples.push({ rtt: finished - started, offset: phoneNow - (started + finished) / 2 });
+      if (this.clockSamples.length > 20) this.clockSamples.shift();
+      best = this.clockSamples.reduce((winner, sample) => sample.rtt < winner.rtt ? sample : winner);
+      this.clockOffset = best.offset;
+    }
+    state.studio = {
+      transport: this.transport, codec: this.previewCodec,
+      latencyMs: this.latency.samples ? Math.round(this.latency.averageMs) : null,
+      clockOffsetMs: best ? Math.round(best.offset * 1000) : null,
+      clockErrorMs: best ? Math.round(best.rtt * 500) : null
+    };
+    return envelope;
+  }
+
+  // The renderer decodes H.264 with WebCodecs; access units travel by IPC.
+  subscribeRendererFrames() {
+    this.unsubscribeRendererFrames();
+    if (!this.previewFanout) return;
+    this.rendererFrames = this.previewFanout.subscribe({
+      write: (part) => {
+        if (mainWindow && !mainWindow.isDestroyed())
+          mainWindow.webContents.send("m7:frame", { data: part.body, keyframe: part.keyframe });
+        return true;
+      },
+      end: () => {
+        this.rendererFrames = null;
+        emit("preview-frames-ended", {});
       }
-      response.writeHead(200, {
-        "Content-Type": incoming.headers["content-type"] || "multipart/x-mixed-replace; boundary=m7frame",
-        "Cache-Control": "no-store", "Connection": "close"
-      });
-      incoming.pipe(response);
-      this.previewStreams.add(incoming);
-      incoming.on("close", () => this.previewStreams.delete(incoming));
     });
-    upstream.on("timeout", () => upstream.destroy(new Error("Timeout do preview")));
-    upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
-    response.on("close", () => upstream.destroy());
-    upstream.end();
+  }
+
+  unsubscribeRendererFrames() {
+    const unsubscribe = this.rendererFrames;
+    this.rendererFrames = null;
+    if (unsubscribe) unsubscribe();
+  }
+
+  async resumeRendererFrames() {
+    if (this.previewCodec !== "h264") return { ok: false, restart: true };
+    const envelope = await this.apiRequest("GET", "/v1/state");
+    const state = envelope.state || envelope;
+    if (!state.webcam?.enabled || state.webcam?.h264?.available !== true) return { ok: false, restart: true };
+    this.subscribeRendererFrames();
+    return { ok: true };
   }
 
   apiRequest(method, route, body = null, authenticated = true) {
@@ -407,8 +513,10 @@ class Manual7Session {
     return this.apiRequest("POST", "/v1/command", { command, ...extra });
   }
 
-  async startPreview(format) {
+  async startPreview(format, rendererDecodesH264 = false) {
     const selected = format === "vertical" ? "vertical" : "horizontal";
+    this.unsubscribeRendererFrames();
+    this.previewFanout?.close();
     try { await this.command("webcam.stop"); } catch { /* already stopped */ }
     await this.command("set", { control: "webcamFormat", value: selected });
     await this.command("webcam.start");
@@ -429,19 +537,27 @@ class Manual7Session {
     }
     if (!(state?.captureMode === "video" && state?.webcam?.enabled && state?.webcam?.format === selected))
       throw new Error("O iPhone não confirmou a webcam em modo Vídeo dentro de 20 segundos.");
-    const expectedWidth = selected === "vertical" ? 720 : 1280;
-    const expectedHeight = selected === "vertical" ? 1280 : 720;
-    if (Number(state.webcam?.width) !== expectedWidth || Number(state.webcam?.height) !== expectedHeight)
-      throw new Error(`Dimensões inesperadas do iPhone: ${state.webcam?.width || 0} × ${state.webcam?.height || 0}.`);
-    return { ok: true, format: state.webcam.format, width: state.webcam.width,
-      height: state.webcam.height, captureMode: state.captureMode,
+    // H.264 needs an M7 that reports webcam.h264 and a WebCodecs decoder in the renderer; MJPEG
+    // remains the fallback for either side.
+    const h264 = rendererDecodesH264 && state.webcam?.h264?.available === true;
+    this.previewCodec = h264 ? "h264" : "mjpeg";
+    const expectedWidth = h264 ? Number(state.webcam.h264.width) : selected === "vertical" ? 720 : 1280;
+    const expectedHeight = h264 ? Number(state.webcam.h264.height) : selected === "vertical" ? 1280 : 720;
+    const reportedWidth = h264 ? expectedWidth : Number(state.webcam?.width);
+    const reportedHeight = h264 ? expectedHeight : Number(state.webcam?.height);
+    const portrait = expectedHeight > expectedWidth;
+    if (reportedWidth !== expectedWidth || reportedHeight !== expectedHeight || !expectedWidth ||
+        portrait !== (selected === "vertical"))
+      throw new Error(`Dimensões inesperadas do iPhone: ${reportedWidth || 0} × ${reportedHeight || 0}.`);
+    return { ok: true, format: state.webcam.format, width: expectedWidth,
+      height: expectedHeight, captureMode: state.captureMode, codec: this.previewCodec,
       previewUrl: `${this.previewURL()}&reload=${Date.now()}` };
   }
 
   async stopPreview() {
     await this.stopVirtualCamera();
-    for (const stream of this.previewStreams) stream.destroy();
-    this.previewStreams.clear();
+    this.unsubscribeRendererFrames();
+    this.previewFanout?.close();
     try { return await this.command("webcam.stop"); }
     catch (error) { return { ok: false, error: error.message }; }
   }
@@ -464,17 +580,23 @@ class Manual7Session {
       throw new Error("O dispositivo selecionado não foi identificado como v4l2loopback.");
     const ffmpeg = await executableOnPath("ffmpeg");
     if (!ffmpeg) throw new Error("FFmpeg não foi encontrado no PATH deste computador.");
-    if (!(await executableSupportsFilter(ffmpeg, "zscale")))
+    const h264 = this.previewCodec === "h264";
+    if (!h264 && !(await executableSupportsFilter(ffmpeg, "zscale")))
       throw new Error("Este FFmpeg não inclui o filtro zscale necessário para converter corretamente a faixa do MJPEG.");
     try { await fs.access(device, fs.constants.W_OK); }
     catch { throw new Error(`Sem permissão de escrita em ${device}. Verifique o grupo video.`); }
     await this.stopVirtualCamera();
     this.ffmpegStopping = false;
+    // H.264 arrives as limited-range BT.709 4:2:0, already what v4l2 clients
+    // expect; MJPEG is full range and needs an explicit conversion.
+    const input = h264
+      ? ["-probesize", "262144", "-analyzeduration", "200000", "-f", "h264", "-i", this.previewURL("h264"),
+        "-an", "-pix_fmt", "yuv420p"]
+      : ["-f", "mpjpeg", "-i", this.previewURL(), "-an",
+        "-vf", "zscale=iw:ih:in_range=full:out_range=limited:filter=bilinear,format=yuv420p"];
     const child = spawn(ffmpeg, [
       "-hide_banner", "-loglevel", "warning", "-fflags", "nobuffer+discardcorrupt", "-flags", "low_delay",
-      "-thread_queue_size", "256", "-use_wallclock_as_timestamps", "1",
-      "-f", "mpjpeg", "-i", this.previewURL(), "-an",
-      "-vf", "zscale=iw:ih:in_range=full:out_range=limited:filter=bilinear,format=yuv420p",
+      "-thread_queue_size", "256", "-use_wallclock_as_timestamps", "1", ...input,
       "-color_range", "tv", "-fps_mode", "passthrough", "-f", "v4l2", device
     ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     this.ffmpeg = child;
@@ -526,8 +648,11 @@ class Manual7Session {
 
   async disconnect(notify = true) {
     await this.stopVirtualCamera();
-    for (const stream of this.previewStreams) stream.destroy();
-    this.previewStreams.clear();
+    this.unsubscribeRendererFrames();
+    this.previewFanout?.close();
+    this.previewFanout = null;
+    this.previewCodec = "mjpeg";
+    this.transport = "";
     await Promise.all([closeServer(this.previewServer), closeServer(this.apiForward), closeServer(this.webcamForward)]);
     this.previewServer = null; this.apiForward = null; this.webcamForward = null;
     this.previewPort = 0; this.apiPort = 0; this.webcamPort = 0; this.previewToken = "";
@@ -553,12 +678,14 @@ function installIPC() {
   ipcMain.handle("m7:connect", (_event, credentials) =>
     session.connect(String(credentials?.password || ""), String(credentials?.fingerprint || "")));
   ipcMain.handle("m7:disconnect", () => session.disconnect());
-  ipcMain.handle("m7:state", () => session.apiRequest("GET", "/v1/state"));
+  ipcMain.handle("m7:state", () => session.remoteState());
   ipcMain.handle("m7:command", (_event, value) => session.command(String(value?.command || ""), value?.extra || {}));
   ipcMain.handle("m7:set", (_event, value) => session.command("set", {
     control: String(value?.control || ""), value: value?.value
   }));
-  ipcMain.handle("m7:preview-start", (_event, format) => session.startPreview(String(format || "")));
+  ipcMain.handle("m7:preview-start", (_event, value) => session.startPreview(
+    String(value?.format ?? value ?? ""), value?.h264 === true));
+  ipcMain.handle("m7:preview-frames-resume", () => session.resumeRendererFrames());
   ipcMain.handle("m7:preview-stop", () => session.stopPreview());
   ipcMain.handle("m7:system-status", () => session.systemStatus());
   ipcMain.handle("m7:virtual-camera-start", (_event, device) => session.startVirtualCamera(String(device || "")));

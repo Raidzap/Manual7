@@ -7,6 +7,8 @@ const runtime = {
   preview: false,
   virtualCamera: false,
   previewURL: "",
+  previewCodec: "mjpeg",
+  h264Failed: false,
   state: null,
   pairingExpiresAt: 0,
   expiryTimer: null,
@@ -15,6 +17,7 @@ const runtime = {
   pollFailures: 0,
   webcamFormatChoice: "horizontal",
   webcamFormatChanging: false,
+  cameraMountChanging: false,
   webcamFormatMismatch: "",
   pendingFingerprint: "",
   phone: null,
@@ -27,6 +30,83 @@ const IPV4_PATTERN = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d
 const IP_MASK = "•••.•••.•••.•••";
 const REVEAL_MS = 10_000;
 const revealTimers = new WeakMap();
+
+// H.264 preview: access units arrive by IPC and are decoded with WebCodecs.
+// The bitstream is Annex B with in-band SPS/PPS, so no avcC description is
+// configured. Any decoder failure switches this session back to MJPEG.
+// Software decoding: Chromium's VA-API path rejected this stream on a test
+// machine while the software decoder handled every frame, and 1080p30 costs
+// a desktop CPU little.
+const H264_CONFIG = { codec: "avc1.640028", hardwareAcceleration: "prefer-software", optimizeForLatency: true };
+const h264 = { decoder: null, waitingKeyframe: true, unsubscribe: null, decoded: 0 };
+
+async function rendererDecodesH264() {
+  if (runtime.h264Failed || typeof VideoDecoder === "undefined") return false;
+  try { return (await VideoDecoder.isConfigSupported(H264_CONFIG)).supported === true; }
+  catch { return false; }
+}
+
+function stopH264Decoder() {
+  if (h264.unsubscribe) h264.unsubscribe();
+  h264.unsubscribe = null;
+  if (h264.decoder && h264.decoder.state !== "closed") h264.decoder.close();
+  h264.decoder = null;
+  const canvas = $("previewCanvas");
+  canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function startH264Decoder() {
+  stopH264Decoder();
+  const canvas = $("previewCanvas");
+  const context = canvas.getContext("2d");
+  h264.waitingKeyframe = true;
+  h264.decoded = 0;
+  h264.decoder = new VideoDecoder({
+    output: (frame) => {
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+      }
+      context.drawImage(frame, 0, 0);
+      frame.close();
+      if (h264.decoded++ === 0 && runtime.preview) $("liveLabel").textContent = "AO VIVO";
+    },
+    error: (error) => {
+      if (!runtime.preview || runtime.previewCodec !== "h264") return;
+      runtime.h264Failed = true;
+      message(`Decodificador H.264 indisponível (${error.message}); voltando para MJPEG.`, true);
+      restartPreview();
+    }
+  });
+  h264.decoder.configure(H264_CONFIG);
+  let timestamp = 0;
+  h264.unsubscribe = window.manual7.onFrame(({ data, keyframe }) => {
+    const decoder = h264.decoder;
+    if (!decoder || decoder.state !== "configured") return;
+    // A backlog means the GPU fell behind; drop to the next keyframe rather
+    // than show an ever later picture.
+    if (decoder.decodeQueueSize > 3) h264.waitingKeyframe = true;
+    if (h264.waitingKeyframe && !keyframe) return;
+    h264.waitingKeyframe = false;
+    timestamp += 33_333;
+    decoder.decode(new EncodedVideoChunk({ type: keyframe ? "key" : "delta", timestamp, data }));
+  });
+}
+
+// The decoder listens before main subscribes, so the replayed GOP that starts
+// with a keyframe is not lost.
+async function attachH264Preview() {
+  startH264Decoder();
+  let resumed = null;
+  try { resumed = await window.manual7.resumePreviewFrames(); } catch { /* restart below */ }
+  if (!resumed?.ok && runtime.preview) restartPreview();
+}
+
+async function restartPreview() {
+  const format = runtime.webcamFormatChoice || "horizontal";
+  await stopPreview();
+  if (runtime.connected) await startPreview(format);
+}
 
 function redactedIP(address) {
   const button = document.createElement("button");
@@ -153,12 +233,17 @@ function applyState(envelope) {
     runtime.webcamFormatChoice = remoteWebcamFormat;
     selectSegment("webcamFormat", remoteWebcamFormat);
   }
+  if (!runtime.cameraMountChanging && state.cameraMount) selectSegment("cameraMount", state.cameraMount);
 
   setSegmentEnabled("captureMode", available.captureMode);
   setSegmentEnabled("lens", available.lens);
   setSegmentEnabled("exposureMode", available.exposure);
   setSegmentEnabled("focusMode", available.focus);
   setSegmentEnabled("webcamFormat", runtime.connected && !state.webcam?.requested);
+  // Older M7 builds have no mount setting. While the webcam streams the mount
+  // is locked on the iPhone, but the Studio may stop and restart the preview.
+  setSegmentEnabled("cameraMount", runtime.connected && Boolean(state.cameraMount) &&
+    !state.videoRecording && !state.videoProcessing);
 
   const isoSlider = $("isoSlider");
   if (untouched(isoSlider) && limits.minISO > 0 && limits.maxISO > limits.minISO && actual.ISO > 0) {
@@ -217,7 +302,19 @@ function applyState(envelope) {
   if (mismatch && mismatch !== runtime.webcamFormatMismatch)
     message(`Formato divergente: o iPhone anunciou ${remoteWebcamFormat}, mas publicou ${publishedWidth} × ${publishedHeight}.`, true);
   runtime.webcamFormatMismatch = mismatch;
-  $("streamFPS").textContent = streamFPS > 0 ? `${streamFPS.toFixed(1).replace(".", ",")} fps` : "— fps";
+  const latency = state.studio?.latencyMs;
+  const thermal = state.webcam?.thermal?.state;
+  const hot = thermal === "serious" || thermal === "critical";
+  $("streamFPS").textContent = streamFPS > 0
+    ? [`${streamFPS.toFixed(1).replace(".", ",")} fps`, latency !== null && latency !== undefined && runtime.preview
+      ? `${latency} ms` : "", hot ? "quente" : ""].filter(Boolean).join(" · ")
+    : "— fps";
+  $("streamFPS").title = latency !== null && latency !== undefined
+    ? `Atraso iPhone → PC (rede e SSH, ±${state.studio.clockErrorMs} ms)` : "";
+  if (hot && runtime.thermal !== thermal && state.webcam?.enabled)
+    message(`iPhone quente (${thermal === "critical" ? "crítico" : "alto"}): webcam limitada a ` +
+      `${state.webcam.thermal.maxFPS} fps.`, true);
+  runtime.thermal = thermal;
   $("lensValue").textContent = state.lens === "tele" ? "TELEOBJETIVA" : "GRANDE-ANGULAR";
   $("exposureReadout").textContent = state.exposureMode === "manual" ? "M" : state.exposureMode === "lock" ? "AE-L" : "AUTO";
   $("focusReadout").textContent = state.focusMode === "manual" ? "MF" : state.focusMode === "lock" ? "AF-L" : "AF";
@@ -349,7 +446,7 @@ async function connectSSH(fingerprint = "") {
     $("diagnosticButton").disabled = false;
     $("previewButton").disabled = false;
     $("monitorTitle").textContent = `${runtime.phone?.pairing?.device || "iPhone"} · M7 ${result.version || ""}`;
-    setConnection("online", `Conectado · SSH ${result.port}`);
+    setConnection("online", `Conectado · ${result.transport === "usb" ? "USB" : "Wi-Fi"} · SSH ${result.port}`);
     runtime.pollFailures = 0;
     beginPolling();
     await refreshSystemStatus();
@@ -369,7 +466,10 @@ function resetDisconnectedUI() {
   runtime.webcamFormatMismatch = "";
   selectSegment("webcamFormat", "horizontal");
   $("previewImage").removeAttribute("src");
-  $("viewport").classList.remove("live");
+  stopH264Decoder();
+  runtime.previewCodec = "mjpeg";
+  runtime.h264Failed = false;
+  $("viewport").classList.remove("live", "h264");
   $("liveLabel").textContent = "OFFLINE";
   $("streamFPS").textContent = "— fps";
   $("streamFormat").textContent = "16:9";
@@ -382,7 +482,7 @@ function resetDisconnectedUI() {
   $("diagnosticButton").disabled = true;
   $("previewButton").disabled = true;
   $("captureButton").disabled = true;
-  for (const id of ["captureMode", "lens", "exposureMode", "focusMode", "webcamFormat"])
+  for (const id of ["captureMode", "lens", "exposureMode", "focusMode", "webcamFormat", "cameraMount"])
     setSegmentEnabled(id, false);
   for (const id of ["isoSlider", "shutterSlider", "evSlider", "focusSlider", "peakingSlider",
     "peakingToggle", "rawToggle", "jpegSize", "videoFormat", "trackingToggle"])
@@ -420,12 +520,17 @@ async function refreshSystemStatus() {
   }
   select.dataset.ffmpeg = status.ffmpegAvailable ? "true" : "false";
   select.dataset.zscale = status.ffmpegZscaleAvailable ? "true" : "false";
-  select.disabled = runtime.virtualCamera || !status.ffmpegAvailable || !status.ffmpegZscaleAvailable || !status.virtualCameras.length;
+  select.disabled = runtime.virtualCamera || !status.ffmpegAvailable || !zscaleSatisfied() || !status.virtualCameras.length;
   if (!status.ffmpegAvailable) $("virtualCameraHint").textContent = "FFmpeg não foi encontrado no PATH.";
-  else if (!status.ffmpegZscaleAvailable) $("virtualCameraHint").textContent = "O FFmpeg instalado não inclui o filtro zscale.";
+  else if (!zscaleSatisfied()) $("virtualCameraHint").textContent = "O FFmpeg instalado não inclui o filtro zscale.";
   else if (!status.virtualCameras.length) $("virtualCameraHint").textContent = "Carregue o módulo v4l2loopback para criar /dev/video*.";
   else $("virtualCameraHint").textContent = "Disponível para OBS, Meet e outros aplicativos.";
   updateVirtualCameraUI();
+}
+
+// zscale only converts the full-range MJPEG; the H.264 stream needs no filter.
+function zscaleSatisfied() {
+  return runtime.previewCodec === "h264" || $("virtualCameraDevice").dataset.zscale === "true";
 }
 
 function updateVirtualCameraUI() {
@@ -435,9 +540,9 @@ function updateVirtualCameraUI() {
   button.textContent = runtime.virtualCamera ? "Parar câmera virtual" : "Transmitir para o Linux";
   button.classList.toggle("danger", runtime.virtualCamera);
   button.disabled = !runtime.virtualCamera && (!runtime.connected || !runtime.preview || !select.value ||
-    select.dataset.ffmpeg !== "true" || select.dataset.zscale !== "true");
+    select.dataset.ffmpeg !== "true" || !zscaleSatisfied());
   select.disabled = runtime.virtualCamera || !runtime.connected || !select.value ||
-    select.dataset.ffmpeg !== "true" || select.dataset.zscale !== "true";
+    select.dataset.ffmpeg !== "true" || !zscaleSatisfied();
 }
 
 async function startPreview(requestedFormat = "") {
@@ -447,14 +552,16 @@ async function startPreview(requestedFormat = "") {
       requestedFormat === "horizontal" ? "horizontal" :
         (runtime.webcamFormatChoice || selectedSegment("webcamFormat") || "horizontal");
     selectSegment("webcamFormat", format);
-    const result = await window.manual7.startPreview(format);
+    const result = await window.manual7.startPreview(format, await rendererDecodesH264());
     const confirmedFormat = result.format === "vertical" ? "vertical" : "horizontal";
     runtime.webcamFormatChoice = confirmedFormat;
     selectSegment("webcamFormat", confirmedFormat);
     runtime.preview = true;
     runtime.previewURL = result.previewUrl;
-    const image = $("previewImage");
-    image.src = result.previewUrl;
+    runtime.previewCodec = result.codec === "h264" ? "h264" : "mjpeg";
+    if (runtime.previewCodec === "h264") attachH264Preview();
+    else $("previewImage").src = result.previewUrl;
+    $("viewport").classList.toggle("h264", runtime.previewCodec === "h264");
     $("viewport").classList.add("live");
     $("viewport").classList.toggle("portrait", confirmedFormat === "vertical");
     $("streamFormat").textContent = confirmedFormat === "vertical" ? "9:16" : "16:9";
@@ -462,7 +569,8 @@ async function startPreview(requestedFormat = "") {
     $("liveLabel").parentElement.classList.add("on");
     $("previewButton").textContent = "Parar retorno";
     updateVirtualCameraUI();
-    message(`Retorno iniciado em ${confirmedFormat === "vertical" ? "Vertical 9:16" : "Horizontal 16:9"}.`);
+    message(`Retorno iniciado em ${confirmedFormat === "vertical" ? "Vertical 9:16" : "Horizontal 16:9"} · ` +
+      `${result.width} × ${result.height} ${runtime.previewCodec === "h264" ? "H.264" : "MJPEG"}.`);
   } catch (error) { message(error.message, true); }
   finally { $("previewButton").disabled = !runtime.connected; }
 }
@@ -470,7 +578,8 @@ async function stopPreview() {
   runtime.preview = false;
   runtime.virtualCamera = false;
   $("previewImage").removeAttribute("src");
-  $("viewport").classList.remove("live");
+  stopH264Decoder();
+  $("viewport").classList.remove("live", "h264");
   $("liveLabel").textContent = "OFFLINE";
   $("streamFPS").textContent = "— fps";
   $("liveLabel").parentElement.classList.remove("on");
@@ -505,6 +614,24 @@ function bindControls() {
           message(error.message, true);
         } finally {
           runtime.webcamFormatChanging = false;
+        }
+        return;
+      }
+      if (group.dataset.control === "cameraMount") {
+        runtime.cameraMountChanging = true;
+        try {
+          const wasPreviewing = runtime.preview;
+          if (wasPreviewing) await stopPreview();
+          await window.manual7.setControl("cameraMount", next);
+          if (wasPreviewing) await startPreview(runtime.webcamFormatChoice);
+          else await pollState();
+          message(`Montagem: ${next === "portrait" ? "retrato (9:16 nativo)" :
+            next === "landscape" ? "paisagem, Home à direita (16:9 nativo)" : "paisagem, Home à esquerda (16:9 nativo)"}.`);
+        } catch (error) {
+          selectSegment(group.id, previous);
+          message(error.message, true);
+        } finally {
+          runtime.cameraMountChanging = false;
         }
         return;
       }
@@ -562,6 +689,12 @@ window.manual7.onEvent((event) => {
     runtime.virtualCamera = false;
     updateVirtualCameraUI();
     message(event.message, true);
+  } else if (event.type === "preview-frames-ended") {
+    if (!runtime.preview || runtime.previewCodec !== "h264") return;
+    $("liveLabel").textContent = "RECONECTANDO";
+    setTimeout(async () => {
+      if (runtime.preview && runtime.previewCodec === "h264") attachH264Preview();
+    }, 1200);
   } else if (event.type === "disconnected") {
     resetDisconnectedUI();
   } else if (event.type === "connection-error") {
@@ -613,12 +746,14 @@ $("previewImage").addEventListener("error", () => {
 $("previewImage").addEventListener("load", () => { if (runtime.preview) $("liveLabel").textContent = "AO VIVO"; });
 // Click-to-focus: the point is sent normalized to the published frame, so the
 // letterbox around an object-fit: contain image is excluded.
-$("previewImage").addEventListener("click", (event) => {
-  const image = event.currentTarget;
-  if (!runtime.preview || !runtime.state?.available?.focusPoint || !image.naturalWidth) return;
-  const box = image.getBoundingClientRect();
-  const scale = Math.min(box.width / image.naturalWidth, box.height / image.naturalHeight);
-  const width = image.naturalWidth * scale, height = image.naturalHeight * scale;
+function focusAtPreviewPoint(event) {
+  const element = event.currentTarget;
+  const naturalWidth = element.naturalWidth ?? element.width;
+  const naturalHeight = element.naturalHeight ?? element.height;
+  if (!runtime.preview || !runtime.state?.available?.focusPoint || !naturalWidth || !naturalHeight) return;
+  const box = element.getBoundingClientRect();
+  const scale = Math.min(box.width / naturalWidth, box.height / naturalHeight);
+  const width = naturalWidth * scale, height = naturalHeight * scale;
   const left = box.left + (box.width - width) / 2, top = box.top + (box.height - height) / 2;
   const x = (event.clientX - left) / width, y = (event.clientY - top) / height;
   if (x < 0 || x > 1 || y < 0 || y > 1) return;
@@ -630,7 +765,9 @@ $("previewImage").addEventListener("click", (event) => {
   void ring.offsetWidth;
   ring.classList.add("show");
   setControl("focusPoint", { x: Number(x.toFixed(4)), y: Number(y.toFixed(4)) });
-});
+}
+$("previewImage").addEventListener("click", focusAtPreviewPoint);
+$("previewCanvas").addEventListener("click", focusAtPreviewPoint);
 $("interfaceSelect").addEventListener("change", () => { updateInterfaceAddress(); generateQR(); });
 
 document.addEventListener("click", (event) => {

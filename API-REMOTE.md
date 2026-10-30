@@ -132,6 +132,7 @@ python3 tools/manual7_remote.py record stop
 - `GET /v1/state`: estado atual e limites.
 - `GET /v1/diagnostic`: relatório completo.
 - `POST /v1/command`: ação ou alteração.
+- `GET /v1/webcam.mjpg` e `GET /v1/webcam.h264` (porta da webcam, também com PIN): `multipart/x-mixed-replace; boundary=m7frame`. No H.264, cada parte é uma access unit Annex B com `Content-Type: video/h264` e `X-Keyframe: 0|1`; keyframes trazem SPS/PPS. Um cliente novo recebe primeiro um keyframe.
 
 Exemplo direto com `curl` através do túnel:
 

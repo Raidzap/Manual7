@@ -10,6 +10,10 @@ jobs:
   foundation-imageio:
     runs-on: macos-15
     timeout-minutes: 10
+    env:
+      # The tweak targets iOS 15; keep host builds on APIs of the same era so
+      # newer SDK deprecations do not trip -Werror.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Capture result selection

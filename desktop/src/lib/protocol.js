@@ -57,6 +57,16 @@ function timingSafeToken(expected, supplied) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+// What to do with the SSH host key the iPhone presented. "unknown" and
+// "changed" both stop before the password is sent and need the user's
+// explicit approval; "changed" is expected after reinstalling the jailbreak
+// or OpenSSH, otherwise it can mean another machine answering for the phone.
+function hostKeyStatus(seen, trusted) {
+  if (!seen) return "none";
+  if (!trusted) return "unknown";
+  return timingSafeToken(trusted, seen) ? "trusted" : "changed";
+}
+
 function shutterSeconds(index) {
   return 2 ** (Number(index) / 3);
 }
@@ -94,6 +104,7 @@ module.exports = {
   isPrivateIPv4,
   validatePairingPayload,
   timingSafeToken,
+  hostKeyStatus,
   shutterSeconds,
   shutterLabel,
   isoFromSlider,

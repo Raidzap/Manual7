@@ -6,6 +6,7 @@ const {
   isPrivateIPv4,
   validatePairingPayload,
   timingSafeToken,
+  hostKeyStatus,
   shutterSeconds,
   shutterLabel,
   isoFromSlider,
@@ -54,4 +55,13 @@ test("slider ISO é logarítmico e reversível", () => {
   assert.ok(Math.abs(sliderFromISO(iso, 22, 1760) - 0.5) < 1e-12);
   assert.equal(isoFromSlider(0, 22, 1760), 22);
   assert.ok(Math.abs(isoFromSlider(1, 22, 1760) - 1760) < 1e-8);
+});
+
+test("classifica a chave SSH apresentada pelo iPhone", () => {
+  const key = "SHA256:abc";
+  assert.equal(hostKeyStatus("", key), "none");
+  assert.equal(hostKeyStatus(key, ""), "unknown");
+  assert.equal(hostKeyStatus(key, key), "trusted");
+  assert.equal(hostKeyStatus("SHA256:xyz", key), "changed");
+  assert.equal(hostKeyStatus("SHA256:abcd", key), "changed");
 });

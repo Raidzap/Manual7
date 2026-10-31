@@ -6,7 +6,7 @@ Tweak para **iPhone 7 Plus com iOS 15.8.3**, em jailbreak rootless (Dopamine, pa
 
 ## Manual7 Studio para Linux
 
-O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH (por USB quando o cabo está ligado), visor H.264 ou MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.4](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.4).
+O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH (por USB quando o cabo está ligado), visor H.264 ou MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.5](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.5). Se a chave SSH do iPhone mudar, por exemplo depois de reinstalar o jailbreak, o Studio pede confirmação no próprio diálogo de login.
 
 ## Bridge da API na 0.7.9
 

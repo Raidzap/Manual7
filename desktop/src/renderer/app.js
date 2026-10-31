@@ -421,6 +421,38 @@ function openPairing() {
   loadInterfaces().then(generateQR).catch((error) => message(error.message, true));
 }
 
+// Nothing was sent to the iPhone yet: the password only goes after the user
+// approves the key shown here.
+function showHostKey(result) {
+  const changed = Boolean(result.keyChanged);
+  runtime.pendingFingerprint = result.fingerprint;
+  $("fingerprint").textContent = result.fingerprint;
+  $("previousFingerprint").textContent = changed ? result.previousFingerprint : "";
+  $("previousKey").hidden = !changed;
+  $("trustPanel").classList.toggle("changed", changed);
+  $("trustTitle").textContent = changed ? "A chave SSH do iPhone mudou" : "Chave do iPhone";
+  $("trustHint").textContent = changed
+    ? "Isso é esperado se você reinstalou o jailbreak ou o OpenSSH. Se não fez nada disso, cancele: outro aparelho pode estar se passando pelo iPhone. A senha ainda não foi enviada."
+    : "Compare se você já conhece esta chave. Ela será lembrada neste computador.";
+  $("trustPanel").hidden = false;
+  $("authError").textContent = changed
+    ? "Confirme a nova chave para substituir a antiga e conectar."
+    : "Confirme a chave para concluir a primeira conexão.";
+  $("authConnect").textContent = changed ? "Substituir chave e conectar" : "Confiar e conectar";
+  $("authConnect").classList.toggle("danger", changed);
+  $("authConnect").classList.toggle("primary", !changed);
+}
+
+function resetHostKey() {
+  runtime.pendingFingerprint = "";
+  $("trustPanel").hidden = true;
+  $("trustPanel").classList.remove("changed");
+  $("previousKey").hidden = true;
+  $("authConnect").textContent = "Conectar";
+  $("authConnect").classList.remove("danger");
+  $("authConnect").classList.add("primary");
+}
+
 async function connectSSH(fingerprint = "") {
   const password = $("sshPassword").value;
   $("authError").textContent = "Conectando…";
@@ -429,15 +461,11 @@ async function connectSSH(fingerprint = "") {
   try {
     const result = await window.manual7.connect({ password, fingerprint });
     if (result.trustRequired) {
-      runtime.pendingFingerprint = result.fingerprint;
-      $("fingerprint").textContent = result.fingerprint;
-      $("trustPanel").hidden = false;
-      $("authError").textContent = "Confirme a chave para concluir a primeira conexão.";
-      $("authConnect").textContent = "Confiar e conectar";
+      showHostKey(result);
       return;
     }
     runtime.connected = true;
-    runtime.pendingFingerprint = "";
+    resetHostKey();
     runtime.previewURL = result.previewUrl;
     $("sshPassword").value = "";
     $("authDialog").close();
@@ -667,13 +695,11 @@ function bindControls() {
 window.manual7.onEvent((event) => {
   if (event.type === "pairing-recognized") {
     runtime.phone = event;
-    runtime.pendingFingerprint = "";
+    resetHostKey();
     clearInterval(runtime.expiryTimer);
     if ($("pairingDialog").open) $("pairingDialog").close();
     setRedactedText($("authDevice"), `${event.pairing.device} · iOS ${event.pairing.systemVersion || "—"} · ${event.phoneAddress}:${event.pairing.preferredSSHPort}`);
     $("authError").textContent = "O PIN da API foi recebido pelo canal de pareamento. Falta autenticar o SSH.";
-    $("trustPanel").hidden = true;
-    $("authConnect").textContent = "Conectar";
     $("authDialog").showModal();
     $("sshPassword").focus();
   } else if (event.type === "pairing-stopped" && event.reason === "expired") {

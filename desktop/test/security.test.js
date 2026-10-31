@@ -28,3 +28,15 @@ test("saída V4L2 aceita somente dispositivo virtual reconhecido", () => {
   assert.match(main, /v4l2loopback/);
   assert.match(main, /spawn\(ffmpeg/);
 });
+
+test("chave SSH alterada pede confirmação na interface, sem enviar a senha", () => {
+  const app = fs.readFileSync(path.join(root, "src/renderer/app.js"), "utf8");
+  assert.doesNotMatch(main, /Remova a chave conhecida/);
+  assert.match(main, /keyChanged: true, fingerprint, previousFingerprint: trusted/);
+  // The host verifier rejects any key but the trusted one, so ssh2 stops
+  // before user authentication.
+  assert.match(main, /hostVerifier: \(key\) => \{[\s\S]*?crypto\.timingSafeEqual\(actual, expected\)/);
+  assert.match(app, /result\.keyChanged/);
+  assert.match(app, /Substituir chave e conectar/);
+  assert.match(html, /id="previousFingerprint"/);
+});

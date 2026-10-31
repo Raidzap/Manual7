@@ -17,7 +17,8 @@ const {
   normalizeAddress,
   isPrivateIPv4,
   validatePairingPayload,
-  timingSafeToken
+  timingSafeToken,
+  hostKeyStatus
 } = require("./lib/protocol");
 const { StreamFanout, httpSink } = require("./lib/multipart");
 const { openUsbConnection } = require("./lib/usbmux");
@@ -274,7 +275,10 @@ class Manual7Session {
         transport = "usb";
       } catch (error) {
         usb.socket.destroy();
-        if (error.level === "client-authentication" || (this.pendingFingerprint && !trusted))
+        // A new or changed key is the same sshd on Wi-Fi: ask now instead of
+        // letting a Wi-Fi failure hide it.
+        if (error.level === "client-authentication" ||
+            ["unknown", "changed"].includes(hostKeyStatus(this.pendingFingerprint, trusted)))
           return this.sshFailure(error, trusted, host, port);
         this.pendingFingerprint = "";
       }
@@ -333,9 +337,12 @@ class Manual7Session {
 
   sshFailure(error, trusted, host, port) {
     const fingerprint = this.pendingFingerprint;
-    if (fingerprint && !trusted) return { ok: false, trustRequired: true, fingerprint, host, port };
-    if (fingerprint && trusted && fingerprint !== trusted)
-      throw new Error("A chave SSH do iPhone mudou. Remova a chave conhecida antes de continuar.");
+    const status = hostKeyStatus(fingerprint, trusted);
+    if (status === "unknown") return { ok: false, trustRequired: true, fingerprint, host, port };
+    // The handshake stopped at the host key, so the password was not sent.
+    // Accepting replaces the remembered key on the next successful connect.
+    if (status === "changed")
+      return { ok: false, trustRequired: true, keyChanged: true, fingerprint, previousFingerprint: trusted, host, port };
     throw new Error(`Falha SSH: ${error.level === "client-authentication" ? "senha incorreta ou autenticação recusada" : error.message}`);
   }
 

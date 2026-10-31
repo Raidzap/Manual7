@@ -183,7 +183,12 @@
     <p id="authDevice" class="modal-copy"></p>
     <label for="sshPassword">Senha do usuário <b>mobile</b></label>
     <input id="sshPassword" type="password" autocomplete="off" placeholder="Senha SSH">
-    <div id="trustPanel" class="trust-panel" hidden><span>Chave do iPhone</span><code id="fingerprint"></code><small>Compare se você já conhece esta chave. Ela será lembrada neste computador.</small></div>
+    <div id="trustPanel" class="trust-panel" hidden>
+      <span id="trustTitle">Chave do iPhone</span>
+      <div id="previousKey" hidden><small>Chave conhecida neste computador</small><code id="previousFingerprint"></code><small>Chave apresentada agora</small></div>
+      <code id="fingerprint"></code>
+      <small id="trustHint">Compare se você já conhece esta chave. Ela será lembrada neste computador.</small>
+    </div>
     <p id="authError" class="error-text"></p>
     <div class="modal-actions"><button id="authCancel" class="button ghost">Cancelar</button><button id="authConnect" class="button primary">Conectar</button></div>
   </dialog>

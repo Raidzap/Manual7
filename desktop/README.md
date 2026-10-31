@@ -2,11 +2,11 @@
 
 Aplicativo gráfico para parear o M7 por QR, abrir o túnel SSH (pelo cabo USB quando possível), acompanhar o retorno H.264 ou MJPEG e ajustar a câmera do iPhone em tempo real. O AppImage não precisa instalar o Electron no sistema.
 
-Baixe `Manual7-Studio-0.1.4-x86_64.AppImage` na [release desktop-v0.1.4](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.4), torne-o executável e abra:
+Baixe `Manual7-Studio-0.1.5-x86_64.AppImage` na [release desktop-v0.1.5](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.5), torne-o executável e abra:
 
 ```sh
-chmod +x Manual7-Studio-0.1.4-x86_64.AppImage
-./Manual7-Studio-0.1.4-x86_64.AppImage
+chmod +x Manual7-Studio-0.1.5-x86_64.AppImage
+./Manual7-Studio-0.1.5-x86_64.AppImage
 ```
 
 ## Fluxo de uso
@@ -14,7 +14,7 @@ chmod +x Manual7-Studio-0.1.4-x86_64.AppImage
 1. Abra o M7 no iPhone e mantenha a Câmera em primeiro plano.
 2. Abra o AppImage e clique em **Parear iPhone**.
 3. No M7, use **Conexão com o PC → Pareamento → Ler QR do PC** e leia o código exibido.
-4. Digite a senha SSH do usuário `mobile`. Na primeira conexão, confira e aceite a impressão digital da chave do iPhone.
+4. Digite a senha SSH do usuário `mobile`. Na primeira conexão, confira e aceite a impressão digital da chave do iPhone. Se a chave mudar (depois de reinstalar o jailbreak ou o OpenSSH, por exemplo), o Studio mostra a chave conhecida e a nova e só conecta se você tocar em **Substituir chave e conectar**; até lá a senha não é enviada.
 5. Em **Formato do retorno**, escolha **Horizontal 16:9** ou **Vertical 9:16**.
 6. Clique em **Iniciar retorno**. O Studio confere o formato e as dimensões confirmados pelo iPhone antes de abrir o visor.
 7. ISO, shutter, EV, foco, peaking, RAW/JPEG, lente, vídeo, Reframe e rastreamento passam a usar a mesma API do painel do iPhone.
@@ -31,7 +31,7 @@ Endereços IP aparecem ocultos (`•••.•••.•••.•••`) no se
 
 **Codec.** Com um M7 que oferece H.264, o visor decodifica o stream com WebCodecs (decodificador de software do Chromium) e a câmera virtual recebe o mesmo stream, sem conversão de faixa. Com a montagem **Paisagem** (padrão) o 16:9 sai em 1920 × 1080; com **Retrato**, o 9:16 sai em 1080 × 1920. Trocar a montagem com o retorno ativo reinicia o retorno. Se o iPhone ou o decodificador não suportarem H.264, o Studio volta ao MJPEG sozinho. O visor e o FFmpeg sempre compartilham uma única conexão com o iPhone.
 
-O QR expira em dois minutos e só pode ser usado uma vez. A senha SSH fica somente na memória do processo. O PIN recebido do iPhone permanece no processo principal e não é exposto ao renderer. A chave SSH aceita é lembrada em `~/.config/Manual7 Studio/known-hosts.json`.
+O QR expira em dois minutos e só pode ser usado uma vez. A senha SSH fica somente na memória do processo. O PIN recebido do iPhone permanece no processo principal e não é exposto ao renderer. A chave SSH aceita é lembrada em `~/.config/manual7-studio/known-hosts.json`.
 
 ## Câmera virtual
 
@@ -57,4 +57,4 @@ npm test
 npm run build:appimage
 ```
 
-O arquivo final fica em `desktop/dist/Manual7-Studio-0.1.4-x86_64.AppImage`. Para troca segura ao modo Vídeo e transmissão de até 30 fps, use o M7 móvel 0.7.5 ou superior; clicar no visor para focar requer o M7 0.7.6; H.264, montagem em paisagem, latência e aviso de temperatura requerem o M7 0.7.7. Com versões anteriores do M7, o Studio usa MJPEG.
+O arquivo final fica em `desktop/dist/Manual7-Studio-0.1.5-x86_64.AppImage`. Para troca segura ao modo Vídeo e transmissão de até 30 fps, use o M7 móvel 0.7.5 ou superior; clicar no visor para focar requer o M7 0.7.6; H.264, montagem em paisagem, latência e aviso de temperatura requerem o M7 0.7.7. Com versões anteriores do M7, o Studio usa MJPEG.

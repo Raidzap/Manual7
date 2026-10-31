@@ -165,21 +165,23 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-Baixe o pacote `.deb` e seu checksum na [release v0.7.5](https://github.com/Raidzap/Manual7/releases/tag/v0.7.5).
+O jeito mais simples é pelo repositório do Manual7, que permite instalar e atualizar pelo Sileo ou Zebra e baixa as dependências automaticamente.
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
-2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes do bootstrap.
-3. Transfira `dev.manual7.camera_0.7.5_iphoneos-arm64.deb` para o iPhone e abra-o no Sileo, que resolverá a dependência `openssh-server`. Alternativamente, use `apt` como abaixo.
-4. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
+2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes. Ele fornece `openssh-server`, e o ElleKit do Dopamine fornece `mobilesubstrate`.
+3. No Sileo, vá em **Fontes → + → Adicionar fonte** e informe `https://raidzap.github.io/Manual7/`. Ou abra esse endereço no Safari do iPhone e toque em **Adicionar ao Sileo** (ou **Adicionar ao Zebra**).
+4. Procure **Manual7**, toque em **Obter** e confirme a fila com as dependências. As próximas versões aparecem em **Atualizações**.
+5. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
-Exemplo de instalação por terminal, caso tenha colocado o pacote em `/var/mobile/Downloads`:
+Os pacotes `.deb` e seus checksums também ficam nas [releases](https://github.com/Raidzap/Manual7/releases/tag/v0.7.7). Para instalar um arquivo baixado pelo terminal, sem precisar digitar o caminho completo:
 
 ```sh
-cd /var/mobile/Downloads
-sudo apt install ./dev.manual7.camera_0.7.5_iphoneos-arm64.deb
+sudo apt update
+f=$(find /var/mobile -name 'dev.manual7.camera_0.7.7_iphoneos-arm64.deb' 2>/dev/null | head -n 1)
+cp "$f" /var/mobile/m7.deb && sudo apt install /var/mobile/m7.deb
 ```
 
-Use `apt` ou Sileo nesta versão: `dpkg -i` sozinho não baixa uma dependência ausente. O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. As dependências `mobilesubstrate` e `openssh-server` são fornecidas pelo ambiente rootless/Procursus; o script do OpenSSH carrega o serviço no `launchd`.
+O `apt` só aceita um arquivo local com caminho contendo `/` e terminado em `.deb`. Use o repositório, Sileo ou `apt`: `dpkg -i` sozinho não baixa uma dependência ausente. O pacote instala a biblioteca e seu filtro em `/var/jb/Library/MobileSubstrate/DynamicLibraries`. O filtro restringe a injeção a `com.apple.camera`. As dependências `mobilesubstrate` e `openssh-server` são fornecidas pelo ambiente rootless/Procursus; o script do OpenSSH carrega o serviço no `launchd`.
 
 ## Usar e exportar
 
@@ -263,6 +265,18 @@ A suíte da 0.7.5 também valida a seleção pela interseção Bayer/DNG e a rep
 A suíte completa passou no [GitHub Actions](https://github.com/Raidzap/Manual7/actions/runs/38061692873).
 
 Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferramentas de build não estão incluídas no arquivo de código-fonte.
+
+## Repositório APT
+
+O repositório servido em `https://raidzap.github.io/Manual7/` fica no branch `gh-pages`. A cada release, gere o repositório de novo com os pacotes que devem continuar disponíveis e publique o resultado nesse branch:
+
+```sh
+git worktree add ../manual7-pages gh-pages
+python3 tools/build_apt_repo.py ../manual7-pages packages/dev.manual7.camera_0.7.6_iphoneos-arm64.deb packages/dev.manual7.camera_0.7.7_iphoneos-arm64.deb
+git -C ../manual7-pages add -A && git -C ../manual7-pages commit -m "APT repository: 0.7.7" && git -C ../manual7-pages push origin gh-pages
+```
+
+O script grava `Packages` (também em `.gz`, `.bz2` e `.xz`), um `Release` com os hashes, os `.deb` em `debs/` e uma página com os links para adicionar a fonte no Sileo e no Zebra. O repositório não é assinado; o Sileo e o Zebra aceitam fontes sem assinatura.
 
 ## Visualizador de crashes
 

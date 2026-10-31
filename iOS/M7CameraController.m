@@ -1018,7 +1018,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.8", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.9", @"state":state });
             }];
         });
         return;
@@ -1310,7 +1310,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.8";
+    self.captureTrace[@"version"] = @"0.7.9";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1480,7 +1480,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
     diagnostic[@"rawCompatibility"] = rawCompatibility;
-    diagnostic[@"version"] = @"0.7.8";
+    diagnostic[@"version"] = @"0.7.9";
     self.lensDiagnostic = diagnostic;
     [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
@@ -2321,7 +2321,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.8";
+    self.videoTrace[@"version"] = @"0.7.9";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -3038,7 +3038,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.8", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.9", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
@@ -3075,7 +3075,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.8", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.9", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:revealed ? @"Copiar diagnóstico com IPs" : @"Copiar diagnóstico"
@@ -3126,7 +3126,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.8" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.9" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];

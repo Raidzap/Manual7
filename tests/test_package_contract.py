@@ -28,6 +28,15 @@ class PackageContractTests(unittest.TestCase):
             path = ROOT / "layout/DEBIAN" / script
             self.assertTrue(path.stat().st_mode & 0o111)
 
+    def test_package_files_are_not_group_writable(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn('chmod -R go-w "$(THEOS_STAGING_DIR)"', makefile)
+        for script in ("postinst", "prerm"):
+            text = (ROOT / "layout/DEBIAN" / script).read_text(encoding="utf-8")
+            self.assertIn('[ -x "$LAUNCHCTL" ] || LAUNCHCTL=launchctl', text)
+        postinst = (ROOT / "layout/DEBIAN/postinst").read_text(encoding="utf-8")
+        self.assertIn('if ! "$LAUNCHCTL" bootstrap system "$PLIST"; then', postinst)
+
     def test_rootful_build_drops_the_rootless_prefix(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         rootful = makefile.split("ifeq ($(ROOTFUL),1)")

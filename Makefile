@@ -25,6 +25,11 @@ manual7bridge_INSTALL_PATH = /usr/libexec
 
 include $(THEOS_MAKE_PATH)/tool.mk
 
+# Theos keeps the build machine's modes; with umask 002 everything would be
+# group-writable, and launchd refuses such a LaunchDaemon.
+before-package::
+	$(ECHO_NOTHING)chmod -R go-w "$(THEOS_STAGING_DIR)"$(ECHO_END)
+
 ifeq ($(ROOTFUL),1)
 THEOS_PACKAGE_ARCH := iphoneos-arm
 

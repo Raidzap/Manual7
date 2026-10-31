@@ -1,6 +1,9 @@
 #!/bin/sh
+PLIST=/var/jb/Library/LaunchDaemons/dev.manual7.bridge.plist
+LAUNCHCTL=/var/jb/bin/launchctl
+[ -x "$LAUNCHCTL" ] || LAUNCHCTL=launchctl
 if [ "$1" = "remove" ] || [ "$1" = "upgrade" ]; then
-    /var/jb/bin/launchctl bootout system/dev.manual7.bridge >/dev/null 2>&1 || \
-        /var/jb/bin/launchctl unload /var/jb/Library/LaunchDaemons/dev.manual7.bridge.plist >/dev/null 2>&1 || true
+    "$LAUNCHCTL" bootout system/dev.manual7.bridge >/dev/null 2>&1 || \
+        "$LAUNCHCTL" unload "$PLIST" >/dev/null 2>&1 || true
 fi
 exit 0

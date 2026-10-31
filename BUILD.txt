@@ -1,4 +1,4 @@
-Manual7 0.7.8 / Manual7 Studio 0.1.4 — registro de build
+Manual7 0.7.9 / Manual7 Studio 0.1.4 — registro de build
 Data local: 2026-10-30
 Theos commit: dd5c14bb9d91311e221d51b5bfb8c9e5948156db
 Toolchain: L1ghtmann/llvm-project clang 11.1.0, commit 210562a8907c5f1ec4a02c7ac969d26d81d304a0
@@ -6,9 +6,10 @@ SDK: iPhoneOS15.6, theos/sdks release master-146e41f
 Arquitetura móvel: arm64; deployment target iOS 15.0; dois pacotes: rootless / iphoneos-arm64 (/var/jb) e rootful / iphoneos-arm (/)
 Alvo móvel: iPhone 7 Plus, iOS 15.8.3; o aparelho do usuário usa jailbreak rootful (dpkg 1.22.6 e apt 2.9.4 iphoneos-arm, ElleKit 1.2)
 Build móvel: as duas variantes foram compiladas, vinculadas e assinadas pelo Theos com FINALPACKAGE=1 (rootful com ROOTFUL=1), cada uma a partir de make clean, sem diagnósticos do compilador. Rootless: estrutura, permissões e scripts de controle idênticos aos da 0.7.7. Rootful: os mesmos arquivos e permissões sem o prefixo /var/jb, scripts com /bin/launchctl e LaunchDaemon apontando para /usr/libexec/manual7bridge; nenhuma ocorrência de /var/jb no pacote nem nos binários.
+0.7.9: arquivos do pacote sem escrita para grupo/outros (chmod -R go-w no staging; antes, o umask 002 da máquina de build gerava rw-rw-r-- e o launchd recusava o LaunchDaemon do bridge no aparelho rootful); postinst mostra o erro do launchctl em vez de ocultá-lo e usa o launchctl do PATH se o caminho do prefixo não existir.
 0.7.8: só empacotamento; o código muda apenas no prefixo usado pela verificação do OpenSSH (THEOS_PACKAGE_INSTALL_PREFIX, ou / no rootful).
 Build Linux: AppImage x86_64 gerado com Electron 44.7.0 e electron-builder 26.15.3.
-Testes locais: 62 testes Python aprovados, incluindo os contratos de compilação iOS com THEOS; 6 suítes Node (31 testes) aprovadas.
+Testes locais: 64 testes Python aprovados, incluindo os contratos de compilação iOS com THEOS; 6 suítes Node (31 testes) aprovadas.
 Teste ponta a ponta Linux: stream H.264 1080 × 1920 no framing multipart do M7 servido por um iPhone simulado, redistribuído pelo fan-out do Studio e decodificado pelo FFmpeg com os argumentos da câmera virtual: 120 access units, 2 keyframes, zero erros; assinante atrasado iniciou no GOP reenviado.
 WebCodecs no Electron 44 (Linux): o decodificador padrão (VA-API) recusou o stream na máquina de build; o de software decodificou 120/120 frames. O visor usa hardwareAcceleration "prefer-software".
 USB: cliente usbmuxd validado contra um usbmuxd simulado (listagem, Connect, porta em ordem de rede, bytes do SSH após o Result); sem usbmuxd real na máquina de build.
@@ -18,6 +19,6 @@ Webcam: H.264 VideoToolbox em tempo real, sem B-frames, keyframe a cada 2 s, ~0,
 Montagem: Paisagem (Home à direita, orientação nativa do sensor) por padrão, Invertida ou Retrato; persistida em NSUserDefaults (dev.manual7.cameraMount). 16:9 nativo em 1920 × 1080 na paisagem; 9:16 nativo em 1080 × 1920 em retrato. Fotos permanecem em retrato.
 Estabilidade: idleTimerDisabled enquanto a webcam transmite, com o valor da Câmera restaurado; SO_RCVTIMEO de 3 s nos workers do bridge após a ativação (API e webcam); keepalive SSH de 5 s × 3 no Studio; limite térmico de 20/15 fps em serious/critical.
 Validação física pendente: backend H.264 no A10, effectiveFPS e temperatura em 1920 × 1080; orientação da montagem Paisagem (Home à direita) e Invertida; peaking, guias e rastreamento com o aparelho deitado; toque/clique para focar nas três montagens; conexão USB com usbmuxd real.
-SHA-256 do .deb rootless (iphoneos-arm64): df98680cfce75b8cce819aacdef9d3c70a3cf3358a8fae266a0e5ece92bcbd0b
-SHA-256 do .deb rootful (iphoneos-arm): db1343471d0bef43043af83270348cf70d9269bcba1f3ae85f2b41d8cb16cb71
+SHA-256 do .deb rootless (iphoneos-arm64): 06d249a944ffd6fc978f9af677184edca62e877a2a953764b2a8a0171792e3a9
+SHA-256 do .deb rootful (iphoneos-arm): 1ddc6365a38b86ed6c28efadc3679a75bd0f14c3de49797e4846d8c09edad4eb
 SHA-256 do AppImage: 5fcf3d033b0b7e877e318c56020726a70cc4ef96fc0847abd23aa22e64365d34

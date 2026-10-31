@@ -1,8 +1,15 @@
 #!/bin/sh
+PLIST=/var/jb/Library/LaunchDaemons/dev.manual7.bridge.plist
+LAUNCHCTL=/var/jb/bin/launchctl
+[ -x "$LAUNCHCTL" ] || LAUNCHCTL=launchctl
 if [ "$1" = "configure" ]; then
     /var/jb/usr/bin/killall Camera >/dev/null 2>&1 || /usr/bin/killall Camera >/dev/null 2>&1 || true
-    /var/jb/bin/launchctl bootout system/dev.manual7.bridge >/dev/null 2>&1 || true
-    /var/jb/bin/launchctl bootstrap system /var/jb/Library/LaunchDaemons/dev.manual7.bridge.plist >/dev/null 2>&1 || \
-        /var/jb/bin/launchctl load /var/jb/Library/LaunchDaemons/dev.manual7.bridge.plist >/dev/null 2>&1 || true
+    "$LAUNCHCTL" bootout system/dev.manual7.bridge >/dev/null 2>&1 || true
+    # Show launchctl's error in the package manager instead of hiding it; the
+    # install itself still succeeds.
+    if ! "$LAUNCHCTL" bootstrap system "$PLIST"; then
+        "$LAUNCHCTL" load "$PLIST" || \
+            echo "Manual7: dev.manual7.bridge não carregou; veja 'launchctl print system/dev.manual7.bridge'." >&2
+    fi
 fi
 exit 0

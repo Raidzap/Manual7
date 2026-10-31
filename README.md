@@ -1,12 +1,17 @@
-# Manual7 — 0.7.8 experimental
+# Manual7 — 0.7.9 experimental
 
 Tweak para **iPhone 7 Plus com iOS 15.8.3**, em jailbreak rootless (Dopamine, palera1n) ou rootful (palera1n `-f`). Acrescenta o botão **M7** ao aplicativo Câmera da Apple. O botão abre um modo manual com visor e disparador próprios dentro do mesmo aplicativo. Fechar esse modo devolve o controle à Câmera.
 
-**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.4 moveu a API remota para um bridge `launchd` fora do sandbox da Câmera. A 0.7.5 corrige o modo da webcam e remove os limites artificiais de 10 fps. A 0.7.6 adiciona toque para focar, oculta IPs e PIN até um toque, reorganiza o painel e reduz o trabalho por frame (saída de vídeo desligada quando ociosa e JPEG da webcam por VideoToolbox, com retorno automático ao Core Image). A 0.7.7 acrescenta webcam H.264 em até 1920 × 1080, montagem em paisagem como padrão, conexão pelo cabo USB, tela sempre acesa durante a transmissão e limite de FPS quando o iPhone esquenta. A 0.7.8 adiciona o pacote rootful (`iphoneos-arm`), sem mudar o funcionamento. **RAW, vídeo, Reframe, rastreamento e a webcam otimizada ainda precisam de validação física completa no iPhone.**
+**Estado:** JPEG foi confirmado pelo usuário como salvo no Fotos na 0.1.3. RAW e RAW + JPEG chegaram ao callback de processamento, mas falharam antes de produzir pixel buffer ou bytes com AVFoundation −11800 / OSStatus −12780, inclusive com somente `AVCapturePhotoOutput`, zoom 1× e sessão ativa. A 0.7.4 moveu a API remota para um bridge `launchd` fora do sandbox da Câmera. A 0.7.5 corrige o modo da webcam e remove os limites artificiais de 10 fps. A 0.7.6 adiciona toque para focar, oculta IPs e PIN até um toque, reorganiza o painel e reduz o trabalho por frame (saída de vídeo desligada quando ociosa e JPEG da webcam por VideoToolbox, com retorno automático ao Core Image). A 0.7.7 acrescenta webcam H.264 em até 1920 × 1080, montagem em paisagem como padrão, conexão pelo cabo USB, tela sempre acesa durante a transmissão e limite de FPS quando o iPhone esquenta. A 0.7.8 adiciona o pacote rootful (`iphoneos-arm`), sem mudar o funcionamento, e a 0.7.9 corrige as permissões do pacote, que impediam o `launchd` de iniciar o bridge da API. **RAW, vídeo, Reframe, rastreamento e a webcam otimizada ainda precisam de validação física completa no iPhone.**
 
 ## Manual7 Studio para Linux
 
 O cliente gráfico em [desktop/README.md](desktop/README.md) reúne o pareamento por QR, autenticação SSH (por USB quando o cabo está ligado), visor H.264 ou MJPEG e todos os controles remotos em uma interface semelhante ao módulo do iPhone. Ele também envia o retorno para uma câmera virtual `v4l2loopback`, permitindo usar a imagem já ajustada no OBS, Meet e outros programas. A distribuição é um AppImage x86_64; Electron e as bibliotecas do cliente ficam dentro do arquivo. Baixe-o na [release desktop-v0.1.4](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.4).
+
+## Bridge da API na 0.7.9
+
+- Os arquivos do pacote saíam com escrita para o grupo (`rw-rw-r--`), herdada do `umask` da máquina de build. O `launchd` recusa um LaunchDaemon assim, então o `dev.manual7.bridge` não subia e a Câmera mostrava "A API remota não iniciou" com `Connection refused` na porta 27837. Agora o pacote sai com `rw-r--r--`/`rwxr-xr-x`.
+- O script de instalação mostra no Sileo o erro do `launchctl`, se houver, em vez de ocultá-lo. Para conferir o serviço: `sudo launchctl print system/dev.manual7.bridge`.
 
 ## Pacote rootful na 0.7.8
 
@@ -179,11 +184,11 @@ O jeito mais simples é pela fonte APT do Raidzap, que permite instalar e atuali
 4. Procure **Manual7**, toque em **Obter** e confirme a fila com as dependências. O Sileo mostra só o pacote da arquitetura do aparelho. As próximas versões aparecem em **Atualizações**.
 5. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
-Os pacotes `.deb` e seus checksums também ficam nas [releases](https://github.com/Raidzap/Manual7/releases/tag/v0.7.8): `dev.manual7.camera_0.7.8_iphoneos-arm64.deb` para rootless e `dev.manual7.camera_0.7.8_iphoneos-arm.deb` para rootful. Para instalar um arquivo baixado pelo terminal, sem precisar digitar o caminho completo:
+Os pacotes `.deb` e seus checksums também ficam nas [releases](https://github.com/Raidzap/Manual7/releases/tag/v0.7.9): `dev.manual7.camera_0.7.9_iphoneos-arm64.deb` para rootless e `dev.manual7.camera_0.7.9_iphoneos-arm.deb` para rootful. Para instalar um arquivo baixado pelo terminal, sem precisar digitar o caminho completo:
 
 ```sh
 sudo apt update
-f=$(find /var/mobile -name "dev.manual7.camera_0.7.8_$(dpkg --print-architecture).deb" 2>/dev/null | head -n 1)
+f=$(find /var/mobile -name "dev.manual7.camera_0.7.9_$(dpkg --print-architecture).deb" 2>/dev/null | head -n 1)
 cp "$f" /var/mobile/m7.deb && sudo apt install /var/mobile/m7.deb
 ```
 
@@ -279,8 +284,8 @@ A fonte `https://raidzap.github.io/repo/` é servida pelo GitHub Pages a partir 
 
 ```sh
 git clone https://github.com/Raidzap/repo ../raidzap-repo
-python3 tools/build_apt_repo.py ../raidzap-repo packages/dev.manual7.camera_0.7.8_iphoneos-arm64.deb packages/dev.manual7.camera_0.7.8_iphoneos-arm.deb
-git -C ../raidzap-repo add -A && git -C ../raidzap-repo commit -m "Manual7 0.7.8" && git -C ../raidzap-repo push
+python3 tools/build_apt_repo.py ../raidzap-repo packages/dev.manual7.camera_0.7.9_iphoneos-arm64.deb packages/dev.manual7.camera_0.7.9_iphoneos-arm.deb
+git -C ../raidzap-repo add -A && git -C ../raidzap-repo commit -m "Manual7 0.7.9" && git -C ../raidzap-repo push
 ```
 
 O pacote é copiado para `debs/`, e o índice cobre todos os `.deb` dessa pasta. O script grava `Packages` (também em `.gz`, `.bz2` e `.xz`), um `Release` com os hashes e uma página com os links para adicionar a fonte no Sileo e no Zebra. O `build_repo.py` do Raidzap/repo é uma cópia deste script. O repositório não é assinado; o Sileo e o Zebra aceitam fontes sem assinatura.

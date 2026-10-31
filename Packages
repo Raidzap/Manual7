@@ -1,0 +1,31 @@
+Package: dev.manual7.camera
+Name: Manual7
+Description: Manual photo/video camera, QR SSH pairing, and webcam with Bayer DNG, peaking, tracking, and 16:9/9:16 reframe for iPhone 7 Plus, iOS 15.
+Maintainer: Manual7
+Author: Manual7
+Section: Tweaks
+Depends: mobilesubstrate, openssh-server, firmware (>= 15.0), firmware (<< 16.0)
+Architecture: iphoneos-arm64
+Version: 0.7.7
+Installed-Size: 656
+Filename: debs/dev.manual7.camera_0.7.7_iphoneos-arm64.deb
+Size: 164850
+MD5sum: 0d8eca6627c55c6f15514dfa1bddc9fb
+SHA1: 41c5ff110d8d6534e998bead6a48fff55529cc52
+SHA256: a7c3b52695ef23b352958f8895f9761ce11241b03cb7f81af92ecd660c9c7eef
+
+Package: dev.manual7.camera
+Name: Manual7
+Description: Manual photo/video camera, QR SSH pairing, and webcam with Bayer DNG, peaking, tracking, and 16:9/9:16 reframe for iPhone 7 Plus, iOS 15.
+Maintainer: Manual7
+Author: Manual7
+Section: Tweaks
+Depends: mobilesubstrate, openssh-server, firmware (>= 15.0), firmware (<< 16.0)
+Architecture: iphoneos-arm64
+Version: 0.7.6
+Installed-Size: 620
+Filename: debs/dev.manual7.camera_0.7.6_iphoneos-arm64.deb
+Size: 155748
+MD5sum: 8ca8cd6d7ff604e96eea6f2dff671e76
+SHA1: a70a104b3ae32d54fa5f7917d696b1afcd463687
+SHA256: ddb371914caddf6b2413257d0949503196c5219e14dd93417ec4bd506e670c69

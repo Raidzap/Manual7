@@ -1,0 +1,24 @@
+Origin: Manual7
+Label: Manual7
+Suite: stable
+Codename: ios
+Version: 1.0
+Architectures: iphoneos-arm64
+Components: main
+Description: Manual7: câmera manual e webcam para iPhone 7 Plus (rootless).
+Date: Sat, 31 Oct 2026 00:01:10 GMT
+MD5Sum:
+ eb085cdf13e5636b8e0ed24d3ac6d3b6 1247 Packages
+ bb5e07c9c0ff5f7885d83d861479ce9b 555 Packages.gz
+ 7285370c0e799819afa451b74a1b24ea 662 Packages.bz2
+ 4655f77ec72a01abdac2b6d7b8e4771e 616 Packages.xz
+SHA1:
+ 89581ed46ae70bd8f983ab49d41f99a0708dcc9f 1247 Packages
+ a9714dc1d1e706b7208c78fa8f372eb782ba3c5b 555 Packages.gz
+ 7fb2f51dca9555e492bf7c86a3b49a191eae1393 662 Packages.bz2
+ 51b7a20411a8638b0018fe162d875442d1f9ba38 616 Packages.xz
+SHA256:
+ 36596a3742bc05203184d125ef2aa3d1a4454516869811bfdf8c0f2b780d37ed 1247 Packages
+ f4cd688482a5112618ca9cd52c47121653bad99da32d0a201d6596dc31c959eb 555 Packages.gz
+ 20a533096e43024ee8375f757bfe20fe5f556507f83fea49bfa8e48df0ca0d12 662 Packages.bz2
+ 4a6cc38e38a92233282ce84178763f1def43cedcfc3969db777dcdb6c4781610 616 Packages.xz

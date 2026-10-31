@@ -165,11 +165,11 @@ O original permanece na memória durante a redução. Se ela falhar, o M7 envia 
 
 ## Instalar no iPhone
 
-O jeito mais simples é pelo repositório do Manual7, que permite instalar e atualizar pelo Sileo ou Zebra e baixa as dependências automaticamente.
+O jeito mais simples é pela fonte APT do Raidzap, que permite instalar e atualizar pelo Sileo ou Zebra e baixa as dependências automaticamente.
 
 1. Confirme que o Dopamine está ativo e a injeção de tweaks está habilitada.
 2. Confirme que o repositório Procursus está habilitado no gerenciador de pacotes. Ele fornece `openssh-server`, e o ElleKit do Dopamine fornece `mobilesubstrate`.
-3. No Sileo, vá em **Fontes → + → Adicionar fonte** e informe `https://raidzap.github.io/Manual7/`. Ou abra esse endereço no Safari do iPhone e toque em **Adicionar ao Sileo** (ou **Adicionar ao Zebra**).
+3. No Sileo, vá em **Fontes → + → Adicionar fonte** e informe `https://raidzap.github.io/repo/`. Ou abra esse endereço no Safari do iPhone e toque em **Adicionar ao Sileo** (ou **Adicionar ao Zebra**).
 4. Procure **Manual7**, toque em **Obter** e confirme a fila com as dependências. As próximas versões aparecem em **Atualizações**.
 5. Feche completamente a Câmera no seletor de aplicativos e abra novamente. Toque em **M7** com o iPhone desbloqueado.
 
@@ -268,15 +268,15 @@ Consulte `BUILD.txt` para as versões efetivamente usadas neste pacote. As ferra
 
 ## Repositório APT
 
-O repositório servido em `https://raidzap.github.io/Manual7/` fica no branch `gh-pages`. A cada release, gere o repositório de novo com os pacotes que devem continuar disponíveis e publique o resultado nesse branch:
+A fonte `https://raidzap.github.io/repo/` é servida pelo GitHub Pages a partir do repositório [Raidzap/repo](https://github.com/Raidzap/repo), que pode receber pacotes de outros projetos. A cada release do Manual7, adicione o `.deb` novo e publique:
 
 ```sh
-git worktree add ../manual7-pages gh-pages
-python3 tools/build_apt_repo.py ../manual7-pages packages/dev.manual7.camera_0.7.6_iphoneos-arm64.deb packages/dev.manual7.camera_0.7.7_iphoneos-arm64.deb
-git -C ../manual7-pages add -A && git -C ../manual7-pages commit -m "APT repository: 0.7.7" && git -C ../manual7-pages push origin gh-pages
+git clone https://github.com/Raidzap/repo ../raidzap-repo
+python3 tools/build_apt_repo.py ../raidzap-repo packages/dev.manual7.camera_0.7.7_iphoneos-arm64.deb
+git -C ../raidzap-repo add -A && git -C ../raidzap-repo commit -m "Manual7 0.7.7" && git -C ../raidzap-repo push
 ```
 
-O script grava `Packages` (também em `.gz`, `.bz2` e `.xz`), um `Release` com os hashes, os `.deb` em `debs/` e uma página com os links para adicionar a fonte no Sileo e no Zebra. O repositório não é assinado; o Sileo e o Zebra aceitam fontes sem assinatura.
+O pacote é copiado para `debs/`, e o índice cobre todos os `.deb` dessa pasta. O script grava `Packages` (também em `.gz`, `.bz2` e `.xz`), um `Release` com os hashes e uma página com os links para adicionar a fonte no Sileo e no Zebra. O `build_repo.py` do Raidzap/repo é uma cópia deste script. O repositório não é assinado; o Sileo e o Zebra aceitam fontes sem assinatura.
 
 ## Visualizador de crashes
 

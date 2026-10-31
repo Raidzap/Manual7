@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Gera um repositório APT plano (Packages + Release) para o Sileo/Zebra.
 
-Uso: python3 tools/build_apt_repo.py SAIDA pacote.deb [pacote.deb ...]
+Uso: python3 tools/build_apt_repo.py SAIDA [pacote.deb ...]
 
+Os pacotes informados são copiados para SAIDA/debs, e o índice cobre todos
+os .deb dessa pasta, de qualquer projeto. Sem pacotes, só refaz o índice.
 A pasta SAIDA pode ser publicada como está (GitHub Pages). O Sileo resolve
-as dependências do Manual7 pelos repositórios do bootstrap (Procursus).
+as dependências pelos repositórios do bootstrap (Procursus).
 """
 
 import argparse
@@ -20,9 +22,9 @@ import shutil
 import sys
 import tarfile
 
-LABEL = "Manual7"
-DESCRIPTION = "Manual7: câmera manual e webcam para iPhone 7 Plus (rootless)."
-DEFAULT_URL = "https://raidzap.github.io/Manual7/"
+LABEL = "Raidzap"
+DESCRIPTION = "Tweaks do Raidzap para iOS com jailbreak rootless."
+DEFAULT_URL = "https://raidzap.github.io/repo/"
 # (field in Packages, field in Release, hashlib name): dpkg spells "MD5sum".
 HASHES = (("MD5sum", "MD5Sum", "md5"), ("SHA1", "SHA1", "sha1"), ("SHA256", "SHA256", "sha256"))
 
@@ -102,13 +104,15 @@ def release_file(indexes, date):
 
 
 def index_page(url, entries):
-    rows = "".join(f"<li>{html.escape(control.get('Name', control['Package']))} {html.escape(control['Version'])}</li>"
-                   for control, _ in entries)
+    rows = "".join(
+        f"<li><b>{html.escape(control.get('Name', control['Package']))}</b> {html.escape(control['Version'])}"
+        f" — {html.escape(control.get('Description', '').splitlines()[0] if control.get('Description') else '')}</li>"
+        for control, _ in entries)
     source = html.escape(url)
     return (
         '<!doctype html><html lang="pt-BR"><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>{LABEL} repo</title>"
+        f"<title>{LABEL} Repo</title>"
         '<body style="font-family:system-ui;max-width:36rem;margin:2rem auto;padding:0 1rem">'
         f"<h1>{LABEL}</h1><p>{html.escape(DESCRIPTION)}</p>"
         f'<p><a href="sileo://source/{source}">Adicionar ao Sileo</a> · '
@@ -123,14 +127,20 @@ def build(output, debs, date=None, url=DEFAULT_URL):
     output = pathlib.Path(output)
     pool = output / "debs"
     pool.mkdir(parents=True, exist_ok=True)
-    entries = []
     for path in map(pathlib.Path, debs):
+        if not path.is_file():
+            raise ValueError(f"{path}: arquivo não encontrado")
+        read_control(path.read_bytes())
+        target = pool / path.name
+        if not target.exists() or not target.samefile(path):
+            shutil.copyfile(path, target)
+    entries = []
+    for path in sorted(pool.glob("*.deb")):
         data = path.read_bytes()
         control = parse_control(read_control(data))
         for required in ("Package", "Version", "Architecture"):
             if not control.get(required):
                 raise ValueError(f"{path.name}: campo {required} ausente")
-        shutil.copyfile(path, pool / path.name)
         entries.append((control["Package"], version_key(control["Version"]), control,
                         package_stanza(control, f"debs/{path.name}", data)))
     entries.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
@@ -151,9 +161,9 @@ def build(output, debs, date=None, url=DEFAULT_URL):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Gera o repositório APT do Manual7.")
+    parser = argparse.ArgumentParser(description="Gera o repositório APT para o Sileo/Zebra.")
     parser.add_argument("output", help="pasta do repositório")
-    parser.add_argument("debs", nargs="+", help="pacotes .deb")
+    parser.add_argument("debs", nargs="*", help="pacotes .deb a adicionar")
     parser.add_argument("--url", default=DEFAULT_URL, help="endereço público do repositório")
     args = parser.parse_args(argv)
     try:

@@ -35,8 +35,8 @@ def ar(members):
     return out
 
 
-def deb(version):
-    control = (f"Package: dev.manual7.camera\nName: Manual7\nVersion: {version}\n"
+def deb(version, package="dev.manual7.camera"):
+    control = (f"Package: {package}\nName: Manual7\nVersion: {version}\n"
                "Architecture: iphoneos-arm64\nDepends: mobilesubstrate, openssh-server\n"
                "Description: Teste.\n").encode()
     return ar([("debian-binary", b"2.0\n"), ("control.tar.gz", tar_gz("./control", control)),
@@ -69,7 +69,23 @@ class AptRepoTests(unittest.TestCase):
             self.assertTrue((out / ".nojekyll").exists())
             page = (out / "index.html").read_text()
             self.assertIn(f"sileo://source/{REPO.DEFAULT_URL}", page)
-            self.assertIn("Manual7 0.7.10", page)
+            self.assertIn("<b>Manual7</b> 0.7.10 — Teste.", page)
+
+    def test_keeps_existing_packages_and_adds_other_projects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            out = root / "repo"
+            (root / "m7.deb").write_bytes(deb("0.7.7"))
+            (root / "other.deb").write_bytes(deb("1.0", "dev.raidzap.other"))
+            REPO.build(out, [root / "m7.deb"])
+            REPO.build(out, [root / "other.deb"])
+            REPO.build(out, [out / "debs" / "m7.deb"])
+            packages = (out / "Packages").read_text()
+            self.assertIn("Package: dev.manual7.camera", packages)
+            self.assertIn("Package: dev.raidzap.other", packages)
+            self.assertEqual(packages.count("Package: "), 2)
+            self.assertEqual(REPO.main([str(out)]), 0)
+            self.assertEqual((out / "Packages").read_text(), packages)
 
     def test_rejects_files_that_are_not_debs(self):
         with tempfile.TemporaryDirectory() as directory:

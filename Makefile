@@ -1,6 +1,12 @@
 ARCHS = arm64
 TARGET = iphone:clang:15.6:15.0
+# ROOTFUL=1 builds the iphoneos-arm package for rootful jailbreaks (palera1n
+# -f); the default is the rootless /var/jb package for Dopamine and palera1n.
+ifeq ($(ROOTFUL),1)
+THEOS_PACKAGE_SCHEME =
+else
 THEOS_PACKAGE_SCHEME = rootless
+endif
 INSTALL_TARGET_PROCESSES = Camera
 
 include $(THEOS)/makefiles/common.mk
@@ -18,3 +24,12 @@ manual7bridge_CFLAGS = -std=c11 -Wall -Wextra -Werror -fmodules-cache-path=$(THE
 manual7bridge_INSTALL_PATH = /usr/libexec
 
 include $(THEOS_MAKE_PATH)/tool.mk
+
+ifeq ($(ROOTFUL),1)
+THEOS_PACKAGE_ARCH := iphoneos-arm
+
+# The layout is written for rootless; rootful installs the same files at /.
+before-package::
+	$(ECHO_NOTHING)perl -pi -e 's#/var/jb##g' "$(THEOS_STAGING_DIR)/DEBIAN/postinst" "$(THEOS_STAGING_DIR)/DEBIAN/prerm" \
+		"$(THEOS_STAGING_DIR)/Library/LaunchDaemons/dev.manual7.bridge.plist"$(ECHO_END)
+endif

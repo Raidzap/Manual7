@@ -84,14 +84,15 @@ def package_stanza(control, filename, data):
     return "\n".join(lines) + "\n"
 
 
-def release_file(indexes, date):
+def release_file(indexes, date, architectures):
     lines = [
         f"Origin: {LABEL}",
         f"Label: {LABEL}",
         "Suite: stable",
         "Codename: ios",
         "Version: 1.0",
-        "Architectures: iphoneos-arm64",
+        # Sileo rejects a source whose Release lacks the device's dpkg architecture.
+        f"Architectures: {' '.join(architectures)}",
         "Components: main",
         f"Description: {DESCRIPTION}",
         f"Date: {email.utils.format_datetime(date, usegmt=True)}",
@@ -153,7 +154,8 @@ def build(output, debs, date=None, url=DEFAULT_URL):
     }
     for name, data in indexes.items():
         (output / name).write_bytes(data)
-    (output / "Release").write_text(release_file(indexes, date), encoding="utf-8")
+    architectures = sorted({entry[2]["Architecture"] for entry in entries} - {"all"}) or ["iphoneos-arm64"]
+    (output / "Release").write_text(release_file(indexes, date, architectures), encoding="utf-8")
     # GitHub Pages: serve every file as is, without a Jekyll build.
     (output / "index.html").write_text(index_page(url, [entry[2:] for entry in entries]), encoding="utf-8")
     (output / ".nojekyll").write_bytes(b"")

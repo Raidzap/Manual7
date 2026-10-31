@@ -28,6 +28,25 @@ class PackageContractTests(unittest.TestCase):
             path = ROOT / "layout/DEBIAN" / script
             self.assertTrue(path.stat().st_mode & 0o111)
 
+    def test_rootful_build_drops_the_rootless_prefix(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        rootful = makefile.split("ifeq ($(ROOTFUL),1)")
+        self.assertEqual(len(rootful), 3)
+        self.assertIn("THEOS_PACKAGE_SCHEME =\nelse\nTHEOS_PACKAGE_SCHEME = rootless", rootful[1])
+        self.assertIn("THEOS_PACKAGE_ARCH := iphoneos-arm\n", rootful[2])
+        for staged in ("DEBIAN/postinst", "DEBIAN/prerm", "Library/LaunchDaemons/dev.manual7.bridge.plist"):
+            self.assertIn(f"$(THEOS_STAGING_DIR)/{staged}", rootful[2])
+        # Every rootless path the layout uses must become a valid rootful one.
+        for path in ("layout/DEBIAN/postinst", "layout/DEBIAN/prerm",
+                     "layout/Library/LaunchDaemons/dev.manual7.bridge.plist"):
+            text = (ROOT / path).read_text(encoding="utf-8")
+            self.assertNotIn("/var/jb/var/jb", text)
+            for rootful_path in [part.split()[0] for part in text.replace("/var/jb", "\0").split("\0")[1:]]:
+                self.assertTrue(rootful_path.startswith("/"), rootful_path)
+        status = (ROOT / "iOS/M7OpenSSHStatus.m").read_text(encoding="utf-8")
+        self.assertIn('prefix.length ? prefix : @"/"', status)
+        self.assertNotIn('@"/var/jb"', status)
+
     def test_remote_startup_never_blocks_view_did_load(self):
         source = (ROOT / "iOS/M7CameraController.m").read_text(encoding="utf-8")
         view_did_load = source.split("- (void)viewDidLoad", 1)[1].split(

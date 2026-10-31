@@ -7,6 +7,11 @@
 #import <sys/socket.h>
 #import <unistd.h>
 
+// Theos defines it as "/var/jb" (rootless) or "" (rootful).
+#ifndef THEOS_PACKAGE_INSTALL_PREFIX
+#define THEOS_PACKAGE_INSTALL_PREFIX "/var/jb"
+#endif
+
 static BOOL M7OpenSSHPortReachable(uint16_t port) {
     int client = socket(AF_INET, SOCK_STREAM, 0);
     if (client < 0) return NO;
@@ -68,5 +73,6 @@ NSDictionary *M7OpenSSHStatusForPrefix(NSString *prefix, NSArray<NSNumber *> *po
 }
 
 NSDictionary *M7OpenSSHStatus(void) {
-    return M7OpenSSHStatusForPrefix(@"/var/jb", @[@22, @2222]);
+    NSString *prefix = @THEOS_PACKAGE_INSTALL_PREFIX;
+    return M7OpenSSHStatusForPrefix(prefix.length ? prefix : @"/", @[@22, @2222]);
 }

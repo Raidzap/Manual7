@@ -35,9 +35,9 @@ def ar(members):
     return out
 
 
-def deb(version, package="dev.manual7.camera"):
+def deb(version, package="dev.manual7.camera", architecture="iphoneos-arm64"):
     control = (f"Package: {package}\nName: Manual7\nVersion: {version}\n"
-               "Architecture: iphoneos-arm64\nDepends: mobilesubstrate, openssh-server\n"
+               f"Architecture: {architecture}\nDepends: mobilesubstrate, openssh-server\n"
                "Description: Teste.\n").encode()
     return ar([("debian-binary", b"2.0\n"), ("control.tar.gz", tar_gz("./control", control)),
                ("data.tar.gz", tar_gz("./x", b"x"))])
@@ -86,6 +86,17 @@ class AptRepoTests(unittest.TestCase):
             self.assertEqual(packages.count("Package: "), 2)
             self.assertEqual(REPO.main([str(out)]), 0)
             self.assertEqual((out / "Packages").read_text(), packages)
+
+    def test_release_lists_every_package_architecture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "rootless.deb").write_bytes(deb("0.7.8"))
+            (root / "rootful.deb").write_bytes(deb("0.7.8", architecture="iphoneos-arm"))
+            out = root / "repo"
+            REPO.build(out, [root / "rootless.deb"])
+            self.assertIn("Architectures: iphoneos-arm64\n", (out / "Release").read_text())
+            REPO.build(out, [root / "rootful.deb"])
+            self.assertIn("Architectures: iphoneos-arm iphoneos-arm64\n", (out / "Release").read_text())
 
     def test_rejects_files_that_are_not_debs(self):
         with tempfile.TemporaryDirectory() as directory:

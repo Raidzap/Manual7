@@ -31,6 +31,7 @@ static NSError *M7VideoRecorderError(NSInteger code, NSString *message) {
 - (instancetype)initWithOutputURL:(NSURL *)url {
     if ((self = [super init])) {
         _outputURL = url;
+        _frameRate = 30;
         _startTime = kCMTimeInvalid;
     }
     return self;
@@ -50,8 +51,8 @@ static NSError *M7VideoRecorderError(NSInteger code, NSString *message) {
     NSInteger pixels = (NSInteger)dimensions.width * dimensions.height;
     NSInteger bitRate = MAX(6000000, MIN(24000000, pixels * 6));
     NSDictionary *compression = @{AVVideoAverageBitRateKey:@(bitRate),
-        AVVideoExpectedSourceFrameRateKey:@30,
-        AVVideoMaxKeyFrameIntervalKey:@30,
+        AVVideoExpectedSourceFrameRateKey:@(self.frameRate),
+        AVVideoMaxKeyFrameIntervalKey:@(self.frameRate),
         AVVideoProfileLevelKey:AVVideoProfileLevelH264HighAutoLevel};
     NSDictionary *videoSettings = @{AVVideoCodecKey:AVVideoCodecTypeH264,
         AVVideoWidthKey:@(dimensions.width), AVVideoHeightKey:@(dimensions.height),

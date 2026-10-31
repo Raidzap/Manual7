@@ -248,7 +248,7 @@ static BOOL M7Fail(NSError **error, NSString *reason) {
     }
     AVCaptureDeviceFormat *selected = bestFourThirds ?: bestFallback;
     if (!selected) {
-        M7Fail(error, @"Nenhum formato de vídeo compatível com 30 fps foi encontrado.");
+        M7Fail(error, [NSString stringWithFormat:@"Nenhum formato de vídeo compatível com %ld fps foi encontrado.", (long)fps]);
         return nil;
     }
     if (![device lockForConfiguration:error]) return nil;
@@ -266,5 +266,22 @@ static BOOL M7Fail(NSError **error, NSString *reason) {
         @"minISO":@(selected.minISO), @"maxISO":@(selected.maxISO),
         @"minExposure":@(CMTimeGetSeconds(selected.minExposureDuration)),
         @"maxExposure":@(CMTimeGetSeconds(selected.maxExposureDuration)) };
+}
+
+- (BOOL)applyFrameRate:(NSInteger)fps error:(NSError **)error {
+    AVCaptureDevice *device = self.device;
+    BOOL supported = NO;
+    for (AVFrameRateRange *range in device.activeFormat.videoSupportedFrameRateRanges)
+        if (range.minFrameRate <= fps && range.maxFrameRate >= fps) { supported = YES; break; }
+    if (!supported) {
+        M7Fail(error, [NSString stringWithFormat:@"O formato atual não suporta %ld fps.", (long)fps]);
+        return NO;
+    }
+    if (![device lockForConfiguration:error]) return NO;
+    CMTime frameDuration = CMTimeMake(1, (int32_t)fps);
+    device.activeVideoMinFrameDuration = frameDuration;
+    device.activeVideoMaxFrameDuration = frameDuration;
+    [device unlockForConfiguration];
+    return YES;
 }
 @end

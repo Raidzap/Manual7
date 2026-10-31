@@ -35,7 +35,7 @@ static void CheckCoverAtPoint(CGSize natural, CGSize target, CGPoint point,
     assert(CGRectGetMaxY(mapped) + .01 >= target.height);
 }
 
-static NSURL *MakeFixture(NSURL *directory) {
+static NSURL *MakeFixture(NSURL *directory, int32_t fps) {
     NSURL *url = [directory URLByAppendingPathComponent:@"fixture.mov"];
     NSError *error = nil;
     AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:url fileType:AVFileTypeQuickTimeMovie error:&error];
@@ -57,7 +57,7 @@ static NSURL *MakeFixture(NSURL *directory) {
         CVPixelBufferLockBaseAddress(pixel, 0);
         memset(CVPixelBufferGetBaseAddress(pixel), frame * 7, CVPixelBufferGetDataSize(pixel));
         CVPixelBufferUnlockBaseAddress(pixel, 0);
-        assert([adaptor appendPixelBuffer:pixel withPresentationTime:CMTimeMake(frame, 30)]);
+        assert([adaptor appendPixelBuffer:pixel withPresentationTime:CMTimeMake(frame, fps)]);
         CVPixelBufferRelease(pixel);
     }
     [input markAsFinished];
@@ -68,7 +68,7 @@ static NSURL *MakeFixture(NSURL *directory) {
     return url;
 }
 
-static void CheckExport(NSURL *source, NSURL *directory, M7VideoFrame frame, BOOL tracked) {
+static void CheckExport(NSURL *source, NSURL *directory, M7VideoFrame frame, BOOL tracked, double fps) {
     NSString *name = frame == M7VideoFrameVertical ? @"vertical.mp4" : @"horizontal.mp4";
     NSURL *output = [directory URLByAppendingPathComponent:name];
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
@@ -86,6 +86,8 @@ static void CheckExport(NSURL *source, NSURL *directory, M7VideoFrame frame, BOO
     Near([details[@"displayHeight"] doubleValue], expected.height);
     assert([details[@"dynamicReframe"] boolValue] == tracked);
     assert([details[@"trackingPointCount"] integerValue] == (tracked ? 2 : 0));
+    // The export keeps the master's cadence instead of resampling to 30 fps.
+    assert(fabs([details[@"nominalFrameRate"] doubleValue] - fps) < 1.0);
 }
 
 int main(void) {
@@ -109,11 +111,17 @@ int main(void) {
             URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
         assert([NSFileManager.defaultManager createDirectoryAtURL:directory
             withIntermediateDirectories:YES attributes:nil error:nil]);
-        NSURL *fixture = MakeFixture(directory);
-        CheckExport(fixture, directory, M7VideoFrameHorizontal, NO);
-        CheckExport(fixture, directory, M7VideoFrameVertical, YES);
+        NSURL *fixture = MakeFixture(directory, 30);
+        CheckExport(fixture, directory, M7VideoFrameHorizontal, NO, 30);
+        CheckExport(fixture, directory, M7VideoFrameVertical, YES, 30);
+        NSURL *cinema = [directory URLByAppendingPathComponent:@"24fps" isDirectory:YES];
+        assert([NSFileManager.defaultManager createDirectoryAtURL:cinema
+            withIntermediateDirectories:YES attributes:nil error:nil]);
+        NSURL *fixture24 = MakeFixture(cinema, 24);
+        CheckExport(fixture24, cinema, M7VideoFrameHorizontal, NO, 24);
+        CheckExport(fixture24, cinema, M7VideoFrameVertical, YES, 24);
         assert([NSFileManager.defaultManager removeItemAtURL:directory error:nil]);
-        puts("Video reframe: centered/tracked transforms and real 16:9/9:16 AVFoundation exports passed.");
+        puts("Video reframe: centered/tracked transforms and real 16:9/9:16 AVFoundation exports at 30 and 24 fps passed.");
     }
     return 0;
 }

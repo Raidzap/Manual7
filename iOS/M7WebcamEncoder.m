@@ -115,6 +115,7 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
 @property (atomic, readwrite) int32_t hardwareStatus;
 @property (nonatomic) VTCompressionSessionRef h264;
 @property (nonatomic) CGSize h264Size;
+@property (nonatomic) NSUInteger h264FrameRate;
 @property (atomic, readwrite) BOOL h264Available;
 @property (atomic, readwrite) int32_t h264Status;
 @end
@@ -132,6 +133,7 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
         _colorSpace = CGColorSpaceCreateDeviceRGB();
         _backend = @"videoToolbox";
         _h264Available = YES;
+        _frameRate = M7WebcamTargetFPS;
     }
     return self;
 }
@@ -158,7 +160,8 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
 // Real time, no frame reordering (B-frames would add a frame of latency) and
 // a keyframe at least every 2 s so a client that joins mid-stream recovers.
 - (BOOL)prepareH264ForSize:(CGSize)size {
-    if (self.h264 && CGSizeEqualToSize(self.h264Size, size)) return YES;
+    NSUInteger fps = self.frameRate ?: M7WebcamTargetFPS;
+    if (self.h264 && CGSizeEqualToSize(self.h264Size, size) && self.h264FrameRate == fps) return YES;
     [self invalidateH264];
     int32_t width = (int32_t)size.width, height = (int32_t)size.height;
     NSDictionary *attributes = @{
@@ -174,9 +177,9 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
         (id)kVTCompressionPropertyKey_RealTime:@YES,
         (id)kVTCompressionPropertyKey_ProfileLevel:(id)kVTProfileLevel_H264_High_AutoLevel,
         (id)kVTCompressionPropertyKey_AllowFrameReordering:@NO,
-        (id)kVTCompressionPropertyKey_MaxKeyFrameInterval:@(M7WebcamTargetFPS * 2),
+        (id)kVTCompressionPropertyKey_MaxKeyFrameInterval:@(fps * 2),
         (id)kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration:@2,
-        (id)kVTCompressionPropertyKey_ExpectedFrameRate:@(M7WebcamTargetFPS),
+        (id)kVTCompressionPropertyKey_ExpectedFrameRate:@(fps),
         (id)kVTCompressionPropertyKey_AverageBitRate:@(bitRate),
         (id)kVTCompressionPropertyKey_DataRateLimits:@[@(bitRate / 8 * 3 / 2), @1],
         (id)kVTCompressionPropertyKey_ColorPrimaries:(id)kCVImageBufferColorPrimaries_ITU_R_709_2,
@@ -191,6 +194,7 @@ CGPoint M7WebcamDevicePoint(CGSize source, CGSize target, CGPoint center, CGPoin
     }
     self.h264 = session;
     self.h264Size = size;
+    self.h264FrameRate = fps;
     return YES;
 }
 

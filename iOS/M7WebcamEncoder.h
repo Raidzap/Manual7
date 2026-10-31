@@ -59,6 +59,8 @@ FOUNDATION_EXPORT CGPoint M7WebcamDevicePoint(CGSize portraitSourceSize, CGSize 
 // NO after the first H.264 failure; the H.264 clients must then be closed.
 @property (atomic, readonly) BOOL h264Available;
 @property (atomic, readonly) int32_t h264Status;
+// Camera frame rate; the H.264 session is rebuilt when it changes.
+@property (atomic) NSUInteger frameRate;
 - (NSData * _Nullable)JPEGDataForPixelBuffer:(CVPixelBufferRef)pixelBuffer
                                     vertical:(BOOL)vertical
                             normalizedCenter:(CGPoint)center

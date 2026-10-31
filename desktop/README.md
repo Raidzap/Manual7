@@ -2,11 +2,11 @@
 
 Aplicativo gráfico para parear o M7 por QR, abrir o túnel SSH (pelo cabo USB quando possível), acompanhar o retorno H.264 ou MJPEG e ajustar a câmera do iPhone em tempo real. O AppImage não precisa instalar o Electron no sistema.
 
-Baixe `Manual7-Studio-0.1.5-x86_64.AppImage` na [release desktop-v0.1.5](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.5), torne-o executável e abra:
+Baixe `Manual7-Studio-0.1.6-x86_64.AppImage` na [release desktop-v0.1.6](https://github.com/Raidzap/Manual7/releases/tag/desktop-v0.1.6), torne-o executável e abra:
 
 ```sh
-chmod +x Manual7-Studio-0.1.5-x86_64.AppImage
-./Manual7-Studio-0.1.5-x86_64.AppImage
+chmod +x Manual7-Studio-0.1.6-x86_64.AppImage
+./Manual7-Studio-0.1.6-x86_64.AppImage
 ```
 
 ## Fluxo de uso
@@ -57,4 +57,4 @@ npm test
 npm run build:appimage
 ```
 
-O arquivo final fica em `desktop/dist/Manual7-Studio-0.1.5-x86_64.AppImage`. Para troca segura ao modo Vídeo e transmissão de até 30 fps, use o M7 móvel 0.7.5 ou superior; clicar no visor para focar requer o M7 0.7.6; H.264, montagem em paisagem, latência e aviso de temperatura requerem o M7 0.7.7. Com versões anteriores do M7, o Studio usa MJPEG.
+O arquivo final fica em `desktop/dist/Manual7-Studio-0.1.6-x86_64.AppImage`. Para troca segura ao modo Vídeo e transmissão de até 30 fps, use o M7 móvel 0.7.5 ou superior; clicar no visor para focar requer o M7 0.7.6; H.264, montagem em paisagem, latência e aviso de temperatura requerem o M7 0.7.7. A **Taxa de quadros** (30 ou 24 fps fixos, em Captura e enquadramento) requer o M7 0.7.10; com versões anteriores ela fica desativada. Com versões anteriores do M7, o Studio usa MJPEG.

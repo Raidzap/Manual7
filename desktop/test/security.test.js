@@ -40,3 +40,14 @@ test("chave SSH alterada pede confirmação na interface, sem enviar a senha", (
   assert.match(app, /Substituir chave e conectar/);
   assert.match(html, /id="previousFingerprint"/);
 });
+
+test("taxa de quadros: 30 ou 24 fps, desativada sem suporte no iPhone", () => {
+  const app = fs.readFileSync(path.join(root, "src/renderer/app.js"), "utf8");
+  assert.match(html, /id="frameRate" class="segmented compact" data-control="frameRate"/);
+  assert.match(html, /data-value="30" class="selected"/);
+  assert.match(html, /data-value="24"/);
+  assert.match(app, /setControl\("frameRate", Number\(next\)\)/);
+  // Older M7 builds report no frameRate, and a recording keeps one rate.
+  assert.match(app, /setSegmentEnabled\("frameRate", runtime\.connected && Boolean\(state\.frameRate\)/);
+  assert.match(app, /"cameraMount", "frameRate"\]\)/);
+});

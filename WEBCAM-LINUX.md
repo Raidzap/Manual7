@@ -84,6 +84,10 @@ O ajuste **Montagem** (painel M7 → Conexão com o PC, ou **Montagem do iPhone*
 
 Os valores valem para H.264; o MJPEG continua em 1280 × 720 / 720 × 1280. A montagem também orienta a gravação e o Reframe: em paisagem, o master 4:3 sai deitado e o recorte 16:9 do Reframe fica nativo. Fotos continuam em retrato. O preview do iPhone mostra a cena correta em qualquer montagem; as guias de Reframe, o marcador do rastreamento e o focus peaking acompanham a rotação. A troca fica bloqueada enquanto a webcam transmite ou um vídeo é gravado/processado. Remotamente: `python3 tools/manual7_remote.py set cameraMount landscape` (`landscapeInverted`, `portrait`).
 
+### Taxa de quadros
+
+O modo Vídeo trava o sensor numa taxa fixa: **30 fps** (padrão) ou **24 fps**, para um visual de cinema. A escolha fica em **Captura → FPS** no iPhone e em **Captura e enquadramento → Taxa de quadros** no Studio, é lembrada e vale para a gravação, o Reframe e a webcam. Ela muda na hora, inclusive com a webcam transmitindo: o H.264 recomeça num keyframe e o FFmpeg segue a nova cadência sozinho (`-fps_mode passthrough`). Durante uma gravação a troca fica bloqueada, para o arquivo manter uma única taxa. Com 24 fps, o obturador perto de 1/50 (regra dos 180°) dá o borrão de movimento natural do cinema. Remotamente: `python3 tools/manual7_remote.py set frameRate 24`.
+
 ### H.264
 
 Quando o M7 oferece `/v1/webcam.h264`, `webcam-feed` usa H.264 automaticamente (`--codec auto`). O encoder do iPhone roda em tempo real, sem B-frames, com keyframe a cada 2 s e a cerca de 0,1 bit por pixel: 2,8 Mbit/s em 1280 × 720 e 6,2 Mbit/s em 1080 × 1920, uma fração do MJPEG. As dimensões dependem da montagem (tabela acima): o formato que coincide com a montagem sai no recorte nativo e o cruzado fica em 720p, sem ampliação. O H.264 já chega em BT.709 de faixa limitada, então o FFmpeg não precisa do `zscale`. `--codec mjpeg` força o caminho anterior.

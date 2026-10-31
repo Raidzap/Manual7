@@ -57,6 +57,31 @@ class WebcamContractTests(unittest.TestCase):
         self.assertIn('orientation:M7PreviewImageOrientation(self.cameraMount)', self.controller)
         self.assertIn('[control isEqual:@"cameraMount"]', self.controller)
 
+    def test_frame_rate_is_fixed_24_or_30_and_persists(self):
+        controls = (ROOT / "iOS/M7DeviceControls.m").read_text()
+        recorder = (ROOT / "iOS/M7VideoRecorder.m").read_text()
+        reframe = (ROOT / "iOS/M7VideoReframe.m").read_text()
+        encoder = (ROOT / "iOS/M7WebcamEncoder.m").read_text()
+        self.assertIn('self.frameRate = savedRate == 24 ? 24 : 30;', self.controller)
+        self.assertIn('setInteger:fps forKey:M7FrameRateDefaultsKey', self.controller)
+        self.assertIn('[control isEqual:@"frameRate"]', self.controller)
+        self.assertIn('@"frameRate aceita 24 ou 30."', self.controller)
+        # Video mode, recording and the webcam all use the chosen rate.
+        self.assertIn('configureVideoFormatAtFPS:self.frameRate', self.controller)
+        self.assertNotIn('configureVideoFormatAtFPS:30', self.controller)
+        self.assertIn('recorder.frameRate = self.frameRate;', self.controller)
+        self.assertIn('AVVideoExpectedSourceFrameRateKey:@(self.frameRate)', recorder)
+        self.assertIn('track.nominalFrameRate', reframe)
+        self.assertNotIn('CMTimeMake(1, 30);', reframe)
+        self.assertIn('ExpectedFrameRate:@(fps)', encoder)
+        # A live change keeps the format (and so manual exposure); a fixed
+        # rate means equal minimum and maximum frame durations.
+        self.assertIn('[self.controls applyFrameRate:fps error:&error]', self.controller)
+        self.assertIn('device.activeVideoMinFrameDuration = frameDuration;\n'
+                      '    device.activeVideoMaxFrameDuration = frameDuration;', controls)
+        self.assertIn('if (self.videoRecording || self.videoProcessing) {\n'
+                      '        self.frameRateControl.selectedSegmentIndex', self.controller)
+
     def test_webcam_slows_down_when_the_iphone_is_hot(self):
         self.assertIn('NSProcessInfoThermalStateDidChangeNotification', self.controller)
         self.assertIn('state >= NSProcessInfoThermalStateCritical ? 15', self.controller)

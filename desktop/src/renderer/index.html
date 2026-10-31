@@ -153,6 +153,13 @@
           </select>
         </label>
         <div class="switch-row">
+          <label><span>Taxa de quadros</span><small>Fixa no vídeo e na webcam · 24 = cinema</small></label>
+          <div id="frameRate" class="segmented compact" data-control="frameRate" role="group" aria-label="Taxa de quadros">
+            <button data-value="30" class="selected" title="30 quadros por segundo fixos" disabled>30</button>
+            <button data-value="24" title="24 quadros por segundo fixos: visual de cinema" disabled>24</button>
+          </div>
+        </div>
+        <div class="switch-row">
           <label for="trackingToggle"><span>Rastreamento</span><small>Pessoa/rosto para o Reframe</small></label>
           <input id="trackingToggle" type="checkbox" role="switch" disabled>
         </div>

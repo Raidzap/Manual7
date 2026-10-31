@@ -8,6 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSURL *outputURL;
 @property (nonatomic, readonly) BOOL started;
 @property (nonatomic, readonly) BOOL finished;
+// Fixed capture rate (24 or 30); set before the first sample.
+@property (nonatomic) NSInteger frameRate;
 - (instancetype)initWithOutputURL:(NSURL *)url;
 - (nullable NSError *)appendSampleBuffer:(CMSampleBufferRef)sampleBuffer
                                mediaType:(AVMediaType)mediaType;

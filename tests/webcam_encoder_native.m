@@ -124,6 +124,14 @@ int main(void) {
                 normalizedCenter:CGPointMake(.5, .5) presentationTime:CMTimeMake(5, 30)
                 forceKeyframe:YES keyframe:&keyframe error:&error];
             assert(forced.length && keyframe && FirstNALType(forced) == 7);
+            // 24 fps rebuilds the session, so the next frame starts a new GOP
+            // even without forceKeyframe.
+            assert(encoder.frameRate == 30);
+            encoder.frameRate = 24;
+            NSData *cinema = [encoder H264AccessUnitForPixelBuffer:pixel vertical:YES
+                normalizedCenter:CGPointMake(.5, .5) presentationTime:CMTimeMake(6, 24)
+                forceKeyframe:NO keyframe:&keyframe error:&error];
+            assert(cinema.length && keyframe && FirstNALType(cinema) == 7);
             printf("Webcam H.264: keyframe %lu bytes, P-frame %lu bytes.\n",
                 (unsigned long)first.length, (unsigned long)second.length);
         } else {
@@ -134,7 +142,7 @@ int main(void) {
         assert(([@[@"videoToolbox", @"coreImage"] containsObject:encoder.backend]));
         printf("Webcam encoder backend: %s (VideoToolbox status %d).\n",
             encoder.backend.UTF8String, encoder.hardwareStatus);
-        puts("Webcam encoder: crop, focus point mapping, tracking-center clamp, 16:9/9:16 JPEG sizes and H.264 access units passed.");
+        puts("Webcam encoder: crop, focus point mapping, tracking-center clamp, 16:9/9:16 JPEG sizes, H.264 access units and 24 fps rebuild passed.");
     }
     return 0;
 }

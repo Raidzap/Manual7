@@ -91,6 +91,8 @@ O formato é `set CONTROLE VALOR`:
 | `jpegLongEdge` | `0`, `3264`, `2560`, `2048`, `1600`, `1280`; `0` significa Original |
 | `videoFormat` | `horizontal`, `vertical`, `both` |
 | `webcamFormat` | `horizontal`, `vertical`; requer webcam parada |
+| `cameraMount` | `landscape`, `landscapeInverted`, `portrait`; requer webcam e gravação paradas |
+| `frameRate` | `30`, `24`; taxa fixa do modo Vídeo, usada pela gravação e pela webcam. Muda na hora, inclusive com a webcam ligada; bloqueado durante a gravação |
 | `tracking` | `true`, `false` |
 | `peaking` | `true`, `false` |
 | `peakingThreshold` | número de `0.03` a `0.6` |

@@ -234,6 +234,7 @@ function applyState(envelope) {
     selectSegment("webcamFormat", remoteWebcamFormat);
   }
   if (!runtime.cameraMountChanging && state.cameraMount) selectSegment("cameraMount", state.cameraMount);
+  if (state.frameRate) selectSegment("frameRate", state.frameRate);
 
   setSegmentEnabled("captureMode", available.captureMode);
   setSegmentEnabled("lens", available.lens);
@@ -243,6 +244,9 @@ function applyState(envelope) {
   // Older M7 builds have no mount setting. While the webcam streams the mount
   // is locked on the iPhone, but the Studio may stop and restart the preview.
   setSegmentEnabled("cameraMount", runtime.connected && Boolean(state.cameraMount) &&
+    !state.videoRecording && !state.videoProcessing);
+  // M7 0.7.10 and later; a recording keeps one rate from start to finish.
+  setSegmentEnabled("frameRate", runtime.connected && Boolean(state.frameRate) && available.frameRate !== false &&
     !state.videoRecording && !state.videoProcessing);
 
   const isoSlider = $("isoSlider");
@@ -510,7 +514,7 @@ function resetDisconnectedUI() {
   $("diagnosticButton").disabled = true;
   $("previewButton").disabled = true;
   $("captureButton").disabled = true;
-  for (const id of ["captureMode", "lens", "exposureMode", "focusMode", "webcamFormat", "cameraMount"])
+  for (const id of ["captureMode", "lens", "exposureMode", "focusMode", "webcamFormat", "cameraMount", "frameRate"])
     setSegmentEnabled(id, false);
   for (const id of ["isoSlider", "shutterSlider", "evSlider", "focusSlider", "peakingSlider",
     "peakingToggle", "rawToggle", "jpegSize", "videoFormat", "trackingToggle"])
@@ -642,6 +646,20 @@ function bindControls() {
           message(error.message, true);
         } finally {
           runtime.webcamFormatChanging = false;
+        }
+        return;
+      }
+      if (group.dataset.control === "frameRate") {
+        if (next === previous) return;
+        try {
+          // The preview keeps running: the iPhone restarts the H.264 stream on a keyframe.
+          await window.manual7.setControl("frameRate", Number(next));
+          message(next === "24" ? "24 fps fixos, visual de cinema. Para o borrão natural, use obturador perto de 1/50." :
+            "30 fps fixos.");
+          setTimeout(pollState, 180);
+        } catch (error) {
+          selectSegment(group.id, previous);
+          message(error.message, true);
         }
         return;
       }

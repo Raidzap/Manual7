@@ -89,7 +89,9 @@ void M7ExportTrackedVideoFrame(NSURL *sourceURL, NSURL *outputURL, M7VideoFrame 
     }
     AVMutableVideoComposition *composition = [AVMutableVideoComposition videoComposition];
     composition.renderSize = target;
-    composition.frameDuration = CMTimeMake(1, 30);
+    // Keep the master's cadence: rendering 24 fps footage at 30 would repeat frames.
+    float sourceRate = track.nominalFrameRate;
+    composition.frameDuration = CMTimeMake(1, sourceRate >= 1 ? (int32_t)lroundf(sourceRate) : 30);
     AVMutableVideoCompositionInstruction *instruction = [AVMutableVideoCompositionInstruction videoCompositionInstruction];
     instruction.timeRange = CMTimeRangeMake(kCMTimeZero, asset.duration);
     AVMutableVideoCompositionLayerInstruction *layer = [AVMutableVideoCompositionLayerInstruction

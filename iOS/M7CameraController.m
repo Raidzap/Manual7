@@ -172,6 +172,9 @@ static NSString *M7RedactIPv4(NSString *text) {
 @property (atomic) NSUInteger webcamThermalDrops;
 @property (atomic) M7CameraMount cameraMount;
 @property (nonatomic) UISegmentedControl *mountControl;
+@property (atomic) NSInteger frameRate;
+@property (nonatomic) UISegmentedControl *frameRateControl;
+@property (nonatomic) UIView *frameRateRow;
 @property (nonatomic) BOOL idleTimerWasDisabled;
 @property (atomic) BOOL pairingScanning;
 @property (atomic) BOOL pairingAnalyzing;
@@ -233,6 +236,8 @@ static NSString *M7RedactIPv4(NSString *text) {
 @end
 
 static NSString *const M7CameraMountDefaultsKey = @"dev.manual7.cameraMount";
+// Fixed capture rate in video mode (and so for recording and the webcam): 30 or 24.
+static NSString *const M7FrameRateDefaultsKey = @"dev.manual7.frameRate";
 
 static NSString *M7ThermalName(NSProcessInfoThermalState state) {
     switch (state) {
@@ -243,7 +248,7 @@ static NSString *M7ThermalName(NSProcessInfoThermalState state) {
     }
 }
 
-// Webcam frame-rate cap while the A10 is hot; 0 means the camera's own 30 fps.
+// Webcam frame-rate cap while the A10 is hot; 0 means the camera's own rate.
 // iOS throttles the CPU/GPU itself at these levels, and fewer encoded frames
 // lower the heat instead of letting the encoder fall behind.
 static double M7ThermalMaxWebcamFPS(NSProcessInfoThermalState state) {
@@ -345,6 +350,9 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     NSInteger mount = [savedMount isKindOfClass:NSNumber.class] ? savedMount.integerValue : M7CameraMountLandscape;
     self.cameraMount = mount >= M7CameraMountLandscape && mount <= M7CameraMountPortrait ?
         (M7CameraMount)mount : M7CameraMountLandscape;
+    NSInteger savedRate = [NSUserDefaults.standardUserDefaults integerForKey:M7FrameRateDefaultsKey];
+    self.frameRate = savedRate == 24 ? 24 : 30;
+    self.webcamEncoder.frameRate = (NSUInteger)self.frameRate;
     self.pairingManager = [M7PairingManager new];
     self.remoteBindAttempts = @[];
     self.remoteStartup = @{ @"state":@"pending", @"reason":@"viewDidLoad" };
@@ -426,6 +434,12 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     [self.videoFormat addTarget:self action:@selector(changeVideoFormat) forControlEvents:UIControlEventValueChanged];
     self.videoFormatRow = [self row:@"Reframe" control:self.videoFormat];
     self.videoFormatRow.hidden = YES;
+    self.frameRateControl = [[UISegmentedControl alloc] initWithItems:@[@"30 fps", @"24 fps"]];
+    self.frameRateControl.selectedSegmentIndex = self.frameRate == 24 ? 1 : 0;
+    self.frameRateControl.accessibilityLabel = @"Taxa de quadros fixa do vídeo e da webcam: 30 ou 24 fps";
+    [self.frameRateControl addTarget:self action:@selector(changeFrameRate) forControlEvents:UIControlEventValueChanged];
+    self.frameRateRow = [self row:@"FPS" control:self.frameRateControl];
+    self.frameRateRow.hidden = YES;
     self.trackingSwitch = [UISwitch new];
     [self.trackingSwitch addTarget:self action:@selector(changeTracking) forControlEvents:UIControlEventValueChanged];
     self.trackingRow = [self row:@"Rastrear" control:self.trackingSwitch];
@@ -436,6 +450,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     [stack addArrangedSubview:self.rawRow];
     [stack addArrangedSubview:self.sizeRow];
     [stack addArrangedSubview:self.videoFormatRow];
+    [stack addArrangedSubview:self.frameRateRow];
     [stack addArrangedSubview:self.trackingRow];
 
     // Rows that only apply to one mode are hidden by enableControls.
@@ -955,7 +970,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         @"raw":@(self.rawSwitch.on), @"jpegLongEdge":@(self.jpegLongEdge),
         @"videoFormat":videoNames[videoIndex], @"tracking":@(self.trackingSwitch.on),
         @"webcam":@(self.webcamSwitch.on), @"webcamFormat":webcamNames[webcamIndex],
-        @"cameraMount":mountName,
+        @"cameraMount":mountName, @"frameRate":@(self.frameRate),
         @"peaking":@(self.peakingSwitch.on), @"peakingThreshold":@(self.thresholdSlider.value),
         @"videoRecording":@(self.videoRecording), @"videoProcessing":@(self.videoProcessing),
         @"captureBusy":@(self.captureBusy), @"rawCaptureWaiting":@(self.rawCaptureWaiting),
@@ -967,7 +982,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
             @"raw":@(self.rawSwitch.enabled), @"videoFormat":@(self.videoFormat.enabled),
             @"tracking":@(self.trackingSwitch.enabled), @"peaking":@(self.peakingSwitch.enabled),
             @"webcam":@(self.webcamSwitch.enabled), @"webcamFormat":@(self.webcamFormat.enabled),
-            @"cameraMount":@(self.mountControl.enabled),
+            @"cameraMount":@(self.mountControl.enabled), @"frameRate":@(self.frameRateControl.enabled),
             @"shutterButton":@(self.shutterButton.enabled), @"focusPoint":@(self.captureAvailable) } };
 }
 
@@ -1018,7 +1033,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     if ([method isEqual:@"GET"] && [path isEqual:@"/v1/state"]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self remoteStateWithCompletion:^(NSDictionary *state) {
-                finish(200, @{ @"ok":@YES, @"version":@"0.7.9", @"state":state });
+                finish(200, @{ @"ok":@YES, @"version":@"0.7.10", @"state":state });
             }];
         });
         return;
@@ -1195,6 +1210,18 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         if (changed) [self changeCameraMount];
         return @{ @"control":control, @"value":text, @"changed":@(changed) };
     }
+    if ([control isEqual:@"frameRate"]) {
+        NSInteger fps = number ? number.integerValue : text.integerValue;
+        if (fps != 24 && fps != 30) { if (error) *error = @"frameRate aceita 24 ou 30."; return nil; }
+        if (self.videoRecording || self.videoProcessing) {
+            if (error) *error = @"Pare a gravação antes de alterar frameRate.";
+            return nil;
+        }
+        BOOL changed = self.frameRate != fps;
+        self.frameRateControl.selectedSegmentIndex = fps == 24 ? 1 : 0;
+        if (changed) [self changeFrameRate];
+        return @{ @"control":control, @"value":@(fps), @"changed":@(changed) };
+    }
     if ([control isEqual:@"tracking"]) {
         if (!number || !self.trackingSwitch.enabled) { if (error) *error = @"Tracking está indisponível agora."; return nil; }
         self.trackingSwitch.on = number.boolValue; [self changeTracking];
@@ -1310,7 +1337,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     if (!events) { events = [NSMutableArray new]; self.captureTrace[@"events"] = events; }
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970), @"details":details ?: @{}}];
     if (events.count > 24) [events removeObjectAtIndex:0];
-    self.captureTrace[@"version"] = @"0.7.9";
+    self.captureTrace[@"version"] = @"0.7.10";
     self.captureTrace[@"controllerID"] = self.controllerID;
     self.captureTrace[@"sessionID"] = self.sessionID;
     self.captureTrace[@"processID"] = @(getpid());
@@ -1444,7 +1471,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     self.controls = [[M7DeviceControls alloc] initWithDevice:device];
     if (self.videoModeActive) {
         [self.session beginConfiguration];
-        NSDictionary *videoFormat = [self.controls configureVideoFormatAtFPS:30 error:error];
+        NSDictionary *videoFormat = [self.controls configureVideoFormatAtFPS:self.frameRate error:error];
         [self.session commitConfiguration];
         if (!videoFormat) return NO;
         self.videoFormatDiagnostic = videoFormat;
@@ -1480,7 +1507,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     diagnostic[@"systemVersion"] = UIDevice.currentDevice.systemVersion;
     diagnostic[@"rawFormats"] = self.photoOutput.availableRawPhotoPixelFormatTypes;
     diagnostic[@"rawCompatibility"] = rawCompatibility;
-    diagnostic[@"version"] = @"0.7.9";
+    diagnostic[@"version"] = @"0.7.10";
     self.lensDiagnostic = diagnostic;
     [self prepareRAWPipeline];
     [self.storage writeJSON:diagnostic filename:@"diagnostico.json" error:nil];
@@ -1689,7 +1716,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         @"encoding":@(self.webcamEncoding),
         @"format":vertical ? @"vertical" : @"horizontal",
         @"width":vertical ? @720 : @1280, @"height":vertical ? @1280 : @720,
-        @"targetFPS":@(M7WebcamTargetFPS), @"jpegQuality":@(M7WebcamJPEGQuality), @"videoOnly":@YES,
+        @"targetFPS":@(self.frameRate), @"jpegQuality":@(M7WebcamJPEGQuality), @"videoOnly":@YES,
         @"captureModeRequired":@"video", @"captureModeActive":@(self.videoModeActive),
         @"usesCameraControls":@YES, @"trackingReframe":@(self.trackingEnabled),
         @"inputFrames":@(self.webcamInputFrames), @"encodedFrames":@(self.webcamEncodedFrames),
@@ -1707,6 +1734,47 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
             @"status":@(self.webcamEncoder.h264Status), @"route":@"/v1/webcam.h264",
             @"width":@(h264Size.width), @"height":@(h264Size.height),
             @"bitRate":@(M7WebcamH264BitRate(h264Size)) } };
+}
+
+// Main queue. A recording keeps one rate from start to finish; the webcam
+// simply follows on its next frame. Only the frame duration changes, so the
+// format, manual exposure and focus stay as they are.
+- (void)changeFrameRate {
+    NSInteger fps = self.frameRateControl.selectedSegmentIndex == 1 ? 24 : 30;
+    if (self.videoRecording || self.videoProcessing) {
+        self.frameRateControl.selectedSegmentIndex = self.frameRate == 24 ? 1 : 0;
+        [self message:@"Pare a gravação antes de mudar o FPS."];
+        return;
+    }
+    if (fps == self.frameRate) return;
+    NSInteger previous = self.frameRate;
+    [self setFrameRateValue:fps];
+    dispatch_async(self.sessionQueue, ^{
+        NSError *error = nil;
+        BOOL live = self.videoModeActive;
+        BOOL applied = !live || [self.controls applyFrameRate:fps error:&error];
+        if (applied && live && self.videoFormatDiagnostic) {
+            NSMutableDictionary *format = [self.videoFormatDiagnostic mutableCopy];
+            format[@"fps"] = @(fps);
+            self.videoFormatDiagnostic = format;
+        }
+        [self recordSessionEvent:@"frameRateChanged" details:@{ @"fps":@(fps), @"previous":@(previous),
+            @"live":@(live), @"applied":@(applied), @"error":M7ErrorDetails(error) }];
+        if (applied) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self setFrameRateValue:previous];
+            [self message:error.localizedDescription ?: @"Não foi possível mudar o FPS."];
+        });
+    });
+    [self message:fps == 24 ? @"24 fps fixos, visual de cinema. Para o borrão natural, use obturador perto de 1/50." :
+        @"30 fps fixos."];
+}
+
+- (void)setFrameRateValue:(NSInteger)fps {
+    self.frameRate = fps;
+    self.webcamEncoder.frameRate = (NSUInteger)fps;
+    self.frameRateControl.selectedSegmentIndex = fps == 24 ? 1 : 0;
+    [NSUserDefaults.standardUserDefaults setInteger:fps forKey:M7FrameRateDefaultsKey];
 }
 
 // Main queue. Rotating the data output while a webcam client or the video
@@ -1805,7 +1873,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
             [self recordSessionEvent:ready ? @"webcamStarted" : @"webcamStartFailed"
                 details:@{ @"server":snapshot, @"error":M7ErrorDetails(error),
                     @"captureMode":self.videoModeActive ? @"video" : @"photo",
-                    @"targetFPS":@(M7WebcamTargetFPS),
+                    @"targetFPS":@(self.frameRate),
                     @"format":self.webcamVertical ? @"vertical" : @"horizontal" }];
         });
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1844,11 +1912,11 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         if (!self.webcamRequested) return;
         if (!self.videoModeActive) {
             [self recordSessionEvent:@"webcamVideoModeRequested" details:@{
-                @"previousCaptureMode":@"photo", @"targetFPS":@(M7WebcamTargetFPS) }];
+                @"previousCaptureMode":@"photo", @"targetFPS":@(self.frameRate) }];
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.captureMode.selectedSegmentIndex = 1;
                 self.rawRow.hidden = YES; self.sizeRow.hidden = YES;
-                self.videoFormatRow.hidden = NO; self.trackingRow.hidden = NO;
+                self.videoFormatRow.hidden = NO; self.frameRateRow.hidden = NO; self.trackingRow.hidden = NO;
                 [self updateReframeGuide]; [self enableControls:NO];
                 [self message:@"Preparando modo Vídeo para a webcam…"];
             });
@@ -1947,7 +2015,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     BOOL video = self.captureMode.selectedSegmentIndex == 1;
     self.rawRow.hidden = video;
     self.sizeRow.hidden = video;
-    self.videoFormatRow.hidden = !video;
+    self.videoFormatRow.hidden = !video; self.frameRateRow.hidden = !video;
     self.trackingRow.hidden = !video;
     [self updateReframeGuide];
     [self enableControls:NO];
@@ -1965,7 +2033,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
             BOOL activeVideo = self.videoModeActive;
             self.captureMode.selectedSegmentIndex = activeVideo ? 1 : 0;
             self.rawRow.hidden = activeVideo; self.sizeRow.hidden = activeVideo;
-            self.videoFormatRow.hidden = !activeVideo; self.trackingRow.hidden = !activeVideo;
+            self.videoFormatRow.hidden = !activeVideo; self.frameRateRow.hidden = !activeVideo; self.trackingRow.hidden = !activeVideo;
             [self updateReframeGuide];
         });
         return;
@@ -2050,7 +2118,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         self.captureMode.selectedSegmentIndex = selected && video ? 1 : 0;
         self.rawRow.hidden = selected && video;
         self.sizeRow.hidden = selected && video;
-        self.videoFormatRow.hidden = !(selected && video);
+        self.videoFormatRow.hidden = !(selected && video); self.frameRateRow.hidden = !(selected && video);
         self.trackingRow.hidden = !(selected && video);
         [self updateReframeGuide];
         [self message:!selected ? error.localizedDescription ?: @"Falha ao configurar o modo." :
@@ -2066,6 +2134,8 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     BOOL changingTopology = self.videoRecording || self.videoProcessing;
     self.captureMode.enabled = ready && !changingTopology && !self.webcamRequested && !self.webcamEnabled;
     self.videoFormat.enabled = ready && self.videoModeActive && !changingTopology;
+    // Outside video mode the choice is stored and applied when video starts.
+    self.frameRateControl.enabled = ready && !changingTopology;
     self.trackingSwitch.enabled = ready && self.videoModeActive && !changingTopology;
     self.webcamSwitch.enabled = ready && !changingTopology;
     self.webcamFormat.enabled = ready && !self.webcamRequested && !self.webcamEnabled;
@@ -2321,7 +2391,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     [events addObject:@{@"stage":stage, @"time":@(NSDate.date.timeIntervalSince1970),
         @"details":M7JSONSnapshot(details ?: @{})}];
     if (events.count > 80) [events removeObjectAtIndex:0];
-    self.videoTrace[@"version"] = @"0.7.9";
+    self.videoTrace[@"version"] = @"0.7.10";
     self.videoTrace[@"controllerID"] = self.controllerID;
     self.videoTrace[@"sessionID"] = self.sessionID;
     self.videoTrace[@"processID"] = @(getpid());
@@ -2398,6 +2468,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         @"availableBytes":availableBytes ?: @0}];
     NSURL *master = [directory URLByAppendingPathComponent:[NSString stringWithFormat:@"M7-master-%@.mov", identifier]];
     M7VideoRecorder *recorder = [[M7VideoRecorder alloc] initWithOutputURL:master];
+    recorder.frameRate = self.frameRate;
     dispatch_sync(self.videoQueue, ^{ self.videoRecorder = recorder; self.lastTrackingTime = 0; });
     dispatch_sync(self.trackingQueue, ^{
         [self.subjectTracker reset]; self.lastTrackingErrorLogTime = 0;
@@ -3038,7 +3109,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
         [pendingVideoDetails addObject:@{@"label":item[@"label"] ?: @"", @"file":url ? M7VideoFileDetails(url) : @{}}];
     }
     NSDictionary *diagnostic = @{@"reportID":NSUUID.UUID.UUIDString, @"reportOrigin":origin, @"reportCreatedAt":@(NSDate.date.timeIntervalSince1970),
-        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.9", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
+        @"lastComparison":comparison, @"sessionEvents":self.sessionEvents ?: @[], @"version":@"0.7.10", @"statusOnScreen":visibleStatus, @"sessionNow":[self sessionDiagnostic],
         @"lastVideo":self.videoTrace ?: @{}, @"videoWriterNow":writer, @"videoFormat":self.videoFormatDiagnostic ?: @{},
         @"trackingNow":@{ @"enabled":@(self.trackingEnabled), @"state":tracker },
         @"webcam":[self webcamSnapshot],
@@ -3075,7 +3146,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
     NSString *identifier = diagnostic[@"reportID"] ?: @"";
     NSString *shortID = [identifier substringToIndex:MIN((NSUInteger)8, identifier.length)];
     BOOL automatic = [diagnostic[@"reportOrigin"] isEqual:@"explicitDNGTest"];
-    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.9", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
+    NSString *title = [NSString stringWithFormat:@"%@ · %@ · M7 0.7.10", automatic ? @"Teste RAW DNG" : @"Estado atual", shortID];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:revealed ? @"Copiar diagnóstico com IPs" : @"Copiar diagnóstico"
@@ -3126,7 +3197,7 @@ static UIImageOrientation M7PreviewImageOrientation(M7CameraMount mount) {
                 files.count ? @"Selecione uma foto para compartilhar ou adicionar ao Fotos." :
                 pending ? @"Há uma foto aguardando inclusão no Fotos. Não encerre a Câmera." :
                 @"Sem cópias locais. Capturas confirmadas ficam no app Fotos; o resultado aparece em Ver diagnóstico.";
-            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.9" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+            UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Exportar · M7 0.7.10" message:message preferredStyle:UIAlertControllerStyleActionSheet];
             [menu addAction:[UIAlertAction actionWithTitle:@"Ver diagnóstico" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showDiagnostic]; }]];
             if (!videoMode) [menu addAction:[UIAlertAction actionWithTitle:@"Testar RAW DNG explícito" style:UIAlertActionStyleDefault
                 handler:^(__unused UIAlertAction *action) { [self runRAWComparison]; }]];

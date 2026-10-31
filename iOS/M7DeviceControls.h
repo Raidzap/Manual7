@@ -38,6 +38,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Selects the best real-time 4:3 format at the requested frame rate. The
 // capture session owner must wrap this call in begin/commitConfiguration.
 - (nullable NSDictionary *)configureVideoFormatAtFPS:(NSInteger)fps error:(NSError **)error;
+// Locks the active format to a new fixed rate without changing the format, so
+// manual exposure and focus survive. NO when the format cannot run at fps.
+- (BOOL)applyFrameRate:(NSInteger)fps error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END
